@@ -170,19 +170,31 @@ static NAN_BUF:          [u8, ..3] = ['N' as u8, 'a' as u8, 'N' as u8];
  * - Fails if `radix` < 2 or `radix` > 36.
  */
 pub fn int_to_str_bytes_common<T: Int>(num: T, radix: uint, sign: SignFormat, f: |u8|) {
+    use ptr::RawPtr;
+    use cast::transmute;
+    static LOOKUP: &'static str = "zyxwvutsrqponmlkjihgfedcba9876543210123456789abcdefghijklmnopqrstuvwxyz";
+    let (lookup, _): (*u8, uint) = unsafe { transmute(LOOKUP) };
+    let lookup = unsafe { lookup.offset(35) };
+
     assert!(2 <= radix && radix <= 36);
 
     let _0: T = Zero::zero();
-
-    let neg = num < _0;
     let radix_gen: T = cast(radix).unwrap();
 
     let mut deccum = num;
+    // let mut current_digit = num % radix_gen;
+    // let mut deccum = num / radix_gen;
     // This is just for integral types, the largest of which is a u64. The
     // smallest base that we can have is 2, so the most number of digits we're
     // ever going to have is 64
     let mut buf = [0u8, ..64];
     let mut cur = 0;
+
+    let neg = num < _0;
+    // if neg {
+    //     current_digit = -current_digit;
+    //     deccum = -deccum;
+    // }
 
     // Loop at least once to make sure at least a `0` gets emitted.
     loop {
@@ -193,20 +205,26 @@ pub fn int_to_str_bytes_common<T: Int>(num: T, radix: uint, sign: SignFormat, f:
         // (See twos complement). But we assume that for the
         // numbers [-35 .. 0] we always have [0 .. 35].
         let current_digit_signed = deccum % radix_gen;
-        let current_digit = if current_digit_signed < _0 {
-            -current_digit_signed
-        } else {
-            current_digit_signed
-        };
-        buf[cur] = match current_digit.to_u8().unwrap() {
-            i @ 0..9 => '0' as u8 + i,
-            i        => 'a' as u8 + (i - 10),
+        // let current_digit = if current_digit_signed < _0 {
+        //     -current_digit_signed
+        // } else {
+        //     current_digit_signed
+        // };
+        // buf[cur] = match current_digit_signed.to_u8().unwrap() {
+        //     i @ 0..9 => '0' as u8 + i,
+        //     i        => 'a' as u8 + (i - 10),
+        // };
+        buf[cur] = unsafe {
+            *lookup.offset(current_digit_signed.to_int().unwrap())
         };
         cur += 1;
 
         deccum = deccum / radix_gen;
         // No more digits to calculate for the non-fractional part -> break
         if deccum == _0 { break; }
+
+        // deccum = deccum / radix_gen;
+        // current_digit = deccum % radix_gen;
     }
 
     // Decide what sign to put in front
