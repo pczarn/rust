@@ -105,8 +105,8 @@ mod table {
         capacity: uint,
         size:     uint,
         hashes:   *mut u64,
-        keys:     *mut K,
-        vals:     *mut V,
+        // keys:     *mut K,
+        // vals:     *mut V,
     }
 
     /// Represents an index into a `RawTable` with no key or value in it.
@@ -247,9 +247,71 @@ mod table {
                 capacity: capacity,
                 size:     0,
                 hashes:   hashes,
-                keys:     keys,
-                vals:     vals,
+                // keys:     keys,
+                // vals:     vals,
             }
+        }
+
+        unsafe fn keys(&self) -> uint {
+            // #[inline]
+            // let hashes_size =
+            //     self.capacity.checked_mul(&size_of::<u64>()).expect("capacity overflow");
+            // let keys_size   =
+            //     self.capacity.checked_mul(&size_of::< K >()).expect("capacity overflow");
+            // let vals_size   =
+            //     self.capacity.checked_mul(&size_of::< V >()).expect("capacity overflow");
+
+            // let (_, _, keys_offset, _, _) =
+            //     calculate_offsets(
+            //         hashes_size, min_align_of::<u64>(),
+            //         keys_size,   min_align_of::< K >(),
+            //         vals_size,   min_align_of::< V >());
+
+            // keys_offset
+
+            let hash_size = self.capacity * size_of::<u64>();
+
+            let keys_align = min_align_of::< K >();
+
+            let hash_offset   = 0;
+            let end_of_hashes = hash_offset + hash_size;
+
+            let keys_offset   = round_up_to_next(end_of_hashes, keys_align);
+
+            keys_offset
+        }
+
+        unsafe fn vals(&self) -> uint {
+            // #[inline]
+            // let hashes_size =
+            //     self.capacity.checked_mul(&size_of::<u64>()).expect("capacity overflow");
+            // let keys_size   =
+            //     self.capacity.checked_mul(&).expect("capacity overflow");
+            // let vals_size   =
+            //     self.capacity.checked_mul(&size_of::< V >()).expect("capacity overflow");
+
+            // let (_, _, _, vals_offset, _) =
+            //     calculate_offsets(
+            //         hashes_size, min_align_of::<u64>(),
+            //         keys_size,   min_align_of::< K >(),
+            //         vals_size,   min_align_of::< V >());
+
+            let hash_size = self.capacity * size_of::<u64>();
+            let keys_size = self.capacity * size_of::< K >();
+            // let vals_size = self.capacity * size_of::< V >();
+
+            let keys_align = min_align_of::< K >();
+            let vals_align = min_align_of::< V >();
+
+            let hash_offset   = 0;
+            let end_of_hashes = hash_offset + hash_size;
+
+            let keys_offset   = round_up_to_next(end_of_hashes, keys_align);
+            let end_of_keys   = keys_offset + keys_size;
+
+            let vals_offset   = round_up_to_next(end_of_keys, vals_align);
+
+            vals_offset
         }
 
         /// Creates a new raw table from a given capacity. All buckets are
@@ -295,9 +357,11 @@ mod table {
             let idx = index.idx;
 
             unsafe {
+                let keys = (self.hashes as *mut u8).offset(self.keys() as int) as *mut K;
+                let vals = (self.hashes as *mut u8).offset(self.vals() as int) as *mut V;
                 debug_assert!(*self.hashes.offset(idx) != EMPTY_BUCKET);
-                (&'a *self.keys.offset(idx),
-                 &'a *self.vals.offset(idx))
+                (&'a *keys.offset(idx),
+                 &'a *vals.offset(idx))
             }
         }
 
@@ -307,9 +371,11 @@ mod table {
             let idx = index.idx;
 
             unsafe {
+                let keys = (self.hashes as *mut u8).offset(self.keys() as int) as *mut K;
+                let vals = (self.hashes as *mut u8).offset(self.vals() as int) as *mut V;
                 debug_assert!(*self.hashes.offset(idx) != EMPTY_BUCKET);
-                (&'a     *self.keys.offset(idx),
-                 &'a mut *self.vals.offset(idx))
+                (&'a     *keys.offset(idx),
+                 &'a mut *vals.offset(idx))
             }
         }
 
@@ -319,10 +385,12 @@ mod table {
             let idx = index.idx;
 
             unsafe {
+                let keys = (self.hashes as *mut u8).offset(self.keys() as int) as *mut K;
+                let vals = (self.hashes as *mut u8).offset(self.vals() as int) as *mut V;
                 debug_assert!(*self.hashes.offset(idx) != EMPTY_BUCKET);
                 (transmute(self.hashes.offset(idx)),
-                 &'a mut *self.keys.offset(idx),
-                 &'a mut *self.vals.offset(idx))
+                 &'a mut *keys.offset(idx),
+                 &'a mut *vals.offset(idx))
             }
         }
 
@@ -339,8 +407,10 @@ mod table {
             unsafe {
                 debug_assert_eq!(*self.hashes.offset(idx), EMPTY_BUCKET);
                 *self.hashes.offset(idx) = hash.inspect();
-                overwrite(&mut *self.keys.offset(idx), k);
-                overwrite(&mut *self.vals.offset(idx), v);
+                let keys = (self.hashes as *mut u8).offset(self.keys() as int) as *mut K;
+                let vals = (self.hashes as *mut u8).offset(self.vals() as int) as *mut V;
+                move_val_init(&mut *keys.offset(idx), k);
+                move_val_init(&mut *vals.offset(idx), v);
             }
 
             self.size += 1;
@@ -361,8 +431,10 @@ mod table {
                 *self.hashes.offset(idx) = EMPTY_BUCKET;
 
                 // Drop the mutable constraint.
-                let keys = self.keys as *const K;
-                let vals = self.vals as *const V;
+                let keys = (self.hashes as *mut u8).offset(self.keys() as int) as *mut K;
+                let vals = (self.hashes as *mut u8).offset(self.vals() as int) as *mut V;
+                let keys = keys as *const K;
+                let vals = vals as *const V;
 
                 let k = ptr::read(keys.offset(idx));
                 let v = ptr::read(vals.offset(idx));
@@ -521,8 +593,10 @@ mod table {
                             let hash = idx.hash().inspect();
                             let (k, v) = self.read(&idx);
                             *new_ht.hashes.offset(i as int) = hash;
-                            overwrite(&mut *new_ht.keys.offset(i as int), (*k).clone());
-                            overwrite(&mut *new_ht.vals.offset(i as int), (*v).clone());
+                let keys = (new_ht.hashes as *mut u8).offset(new_ht.keys() as int) as *mut K;
+                let vals = (new_ht.hashes as *mut u8).offset(new_ht.vals() as int) as *mut V;
+                            move_val_init(&mut *keys.offset(i as int), (*k).clone());
+                            move_val_init(&mut *vals.offset(i as int), (*v).clone());
                         }
                     }
                 }
