@@ -101,6 +101,12 @@ mod table {
     /// this and going "what? of course there are debug-only asserts!", then
     /// please make this use them!
 
+    pub type RawChk<K, V> = (
+        (u64, u64, u64, u64, u64, u64, u64, u64),
+        (K, K, K, K, K, K, K, K),
+        (V, V, V, V, V, V, V, V)
+    );
+
     pub type RawChunks<K, V> =
         Vec<((u64, u64, u64, u64, u64, u64, u64, u64),
              (K, K, K, K, K, K, K, K),
@@ -219,8 +225,13 @@ mod table {
         /// Does not initialize the buckets. The caller should ensure they,
         /// at the very least, set every hash to EMPTY_BUCKET.
         unsafe fn new_uninitialized(vec_capacity: uint) -> RawTable<K, V> {
+            let v: RawChunks<K, V> = Vec::with_capacity(vec_capacity);
+            // println!("{:?}", v.as_ptr());
+            // let v = unsafe {
+                // Vec::from_raw_parts(v.len(), vec_capacity, round_up_to_next(v.as_ptr() as uint, 64) as *mut RawChk<K, V>)
+            // };
             RawTable {
-                chunks: Vec::with_capacity(vec_capacity),
+                chunks: v,
             }
         }
 
