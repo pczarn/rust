@@ -27,6 +27,8 @@ use rand::Rng;
 use rand;
 use result::{Ok, Err};
 
+use vec::Vec;
+use slice::ImmutableVector;
 mod table {
     use clone::Clone;
     use cmp;
@@ -44,6 +46,10 @@ mod table {
     use ptr;
     use rt::heap::{allocate, deallocate};
 
+use tuple::Tuple8;
+use container::Container;
+use vec::Vec;
+use iter::{Iterator, range_step_inclusive};
     static EMPTY_BUCKET: u64 = 0u64;
 
     /// The raw hashtable, providing safe-ish access to the unzipped and highly
@@ -373,8 +379,8 @@ mod table {
                 let (hashes, keys, vals) = self.ref_mut_idx(idx);
                 debug_assert_eq!(*hashes, EMPTY_BUCKET);
                 *hashes = hash.inspect();
-                move_val_init(keys, k);
-                move_val_init(vals, v);
+                overwrite(keys, k);
+                overwrite(vals, v);
             }
 
             unsafe {
@@ -574,8 +580,8 @@ mod table {
                             *(hashes.mut0() as *mut u64).offset(i as int) = hash;
                 // let keys = (new_ht.hashes as *mut u8).offset(new_ht.keys() as int) as *mut K;
                 // let vals = (new_ht.hashes as *mut u8).offset(new_ht.vals() as int) as *mut V;
-                            move_val_init(&mut *(keys.mut0() as *mut K).offset(i as int & 7), (*k).clone());
-                            move_val_init(&mut *(vals.mut0() as *mut V).offset(i as int & 7), (*v).clone());
+                            overwrite(&mut *(keys.mut0() as *mut K).offset(i as int & 7), (*k).clone());
+                            overwrite(&mut *(vals.mut0() as *mut V).offset(i as int & 7), (*v).clone());
                         }
                     }
                 }
@@ -1114,7 +1120,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
     }
 }
 
-impl<K: TotalEq + Hash<S>, V, S, H: Hasher<S>, R: ResizePolicy> HashMap<K, V, H, R> {
+impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
     /// The hashtable will never try to shrink below this size. You can use
     /// this function to reduce reallocations if your hashtable frequently
     /// grows and shrinks by large amounts.
@@ -1531,8 +1537,8 @@ pub type SetMoveItems<K> =
 /// HashMap where the value is (). As with the `HashMap` type, a `HashSet`
 /// requires that the elements implement the `Eq` and `Hash` traits.
 #[deriving(Clone)]
-pub struct HashSet<T, H = sip::SipHasher, R = DefaultResizePolicy> {
-    map: HashMap<T, (), H, R>
+pub struct HashSet<T, H = sip::SipHasher> {
+    map: HashMap<T, (), H>
 }
 
 impl<T: Eq + Hash<S>, S, H: Hasher<S>> PartialEq for HashSet<T, H> {
@@ -1556,11 +1562,11 @@ impl<T: Eq + Hash<S>, S, H: Hasher<S>> Mutable for HashSet<T, H> {
 impl<T: Eq + Hash<S>, S, H: Hasher<S>> Set<T> for HashSet<T, H> {
     fn contains(&self, value: &T) -> bool { self.map.contains_key(value) }
 
-    fn is_disjoint(&self, other: &HashSet<T, H, R>) -> bool {
+    fn is_disjoint(&self, other: &HashSet<T, H>) -> bool {
         self.iter().all(|v| !other.contains(v))
     }
 
-    fn is_subset(&self, other: &HashSet<T, H, R>) -> bool {
+    fn is_subset(&self, other: &HashSet<T, H>) -> bool {
         self.iter().all(|v| other.contains(v))
     }
 }
@@ -1605,7 +1611,7 @@ impl<T: Eq + Hash<S>, S, H: Hasher<S>> HashSet<T, H> {
     }
 }
 
-impl<T: TotalEq + Hash<S>, S, H: Hasher<S>, R: ResizePolicy> HashSet<T, H, R> {
+impl<T: Eq + Hash<S>, S, H: Hasher<S>> HashSet<T, H> {
     /// Reserve space for at least `n` elements in the hash table.
     pub fn reserve(&mut self, n: uint) {
         self.map.reserve(n)
@@ -1631,7 +1637,7 @@ impl<T: TotalEq + Hash<S>, S, H: Hasher<S>, R: ResizePolicy> HashSet<T, H, R> {
     }
 
     /// Visit the values representing the difference
-    pub fn difference<'a>(&'a self, other: &'a HashSet<T, H, R>) -> SetAlgebraItems<'a, T, H, R> {
+    pub fn difference<'a>(&'a self, other: &'a HashSet<T, H>) -> SetAlgebraItems<'a, T, H> {
         Repeat::new(other).zip(self.iter())
             .filter_map(|(other, elt)| {
                 if !other.contains(elt) { Some(elt) } else { None }
@@ -1639,14 +1645,14 @@ impl<T: TotalEq + Hash<S>, S, H: Hasher<S>, R: ResizePolicy> HashSet<T, H, R> {
     }
 
     /// Visit the values representing the symmetric difference
-    pub fn symmetric_difference<'a>(&'a self, other: &'a HashSet<T, H, R>)
-        -> Chain<SetAlgebraItems<'a, T, H, R>, SetAlgebraItems<'a, T, H, R>> {
+    pub fn symmetric_difference<'a>(&'a self, other: &'a HashSet<T, H>)
+        -> Chain<SetAlgebraItems<'a, T, H>, SetAlgebraItems<'a, T, H>> {
         self.difference(other).chain(other.difference(self))
     }
 
     /// Visit the values representing the intersection
-    pub fn intersection<'a>(&'a self, other: &'a HashSet<T, H, R>)
-        -> SetAlgebraItems<'a, T, H, R> {
+    pub fn intersection<'a>(&'a self, other: &'a HashSet<T, H>)
+        -> SetAlgebraItems<'a, T, H> {
         Repeat::new(other).zip(self.iter())
             .filter_map(|(other, elt)| {
                 if other.contains(elt) { Some(elt) } else { None }
@@ -1654,8 +1660,8 @@ impl<T: TotalEq + Hash<S>, S, H: Hasher<S>, R: ResizePolicy> HashSet<T, H, R> {
     }
 
     /// Visit the values representing the union
-    pub fn union<'a>(&'a self, other: &'a HashSet<T, H, R>)
-        -> Chain<SetItems<'a, T>, SetAlgebraItems<'a, T, H, R>> {
+    pub fn union<'a>(&'a self, other: &'a HashSet<T, H>)
+        -> Chain<SetItems<'a, T>, SetAlgebraItems<'a, T, H>> {
         self.iter().chain(other.difference(self))
     }
 }
@@ -1699,9 +1705,9 @@ impl<T: Eq + Hash<S>, S, H: Hasher<S> + Default> Default for HashSet<T, H> {
 // `Repeat` is used to feed the filter closure an explicit capture
 // of a reference to the other set
 /// Set operations iterator
-pub type SetAlgebraItems<'a, T, H, R> =
-    FilterMap<'static, (&'a HashSet<T, H, R>, &'a T), &'a T,
-              Zip<Repeat<&'a HashSet<T, H, R>>, SetItems<'a, T>>>;
+pub type SetAlgebraItems<'a, T, H> =
+    FilterMap<'static, (&'a HashSet<T, H>, &'a T), &'a T,
+              Zip<Repeat<&'a HashSet<T, H>>, SetItems<'a, T>>>;
 
 #[cfg(test)]
 mod test_map {
@@ -2094,52 +2100,6 @@ mod test_map {
             i += 1;
         }
 
-        assert_eq!(m.len(), i);
-        assert!(!m.is_empty());
-    }
-
-    #[test]
-    fn test_resize_policy() {
-        let mut m = HashMap::new();
-
-        assert_eq!(m.len(), 0);
-        assert!(m.is_empty());
-
-        let initial_cap = m.table.capacity();
-        m.reserve(initial_cap * 2);
-        let cap = m.table.capacity();
-
-        assert_eq!(cap, initial_cap * 2);
-
-        let mut i = 0u;
-        for _ in range(0, cap * 3 / 4) {
-            m.insert(i, i);
-            i += 1;
-        }
-
-        assert_eq!(m.len(), i);
-        assert_eq!(m.table.capacity(), cap);
-
-        for _ in range(0, cap / 4) {
-            m.insert(i, i);
-            i += 1;
-        }
-
-        let new_cap = m.table.capacity();
-        assert_eq!(new_cap, cap * 2);
-
-        for _ in range(0, cap / 2) {
-            i -= 1;
-            m.remove(&i);
-            assert_eq!(m.table.capacity(), new_cap);
-        }
-
-        for _ in range(0, cap / 2 - 1) {
-            i -= 1;
-            m.remove(&i);
-        }
-
-        assert_eq!(m.table.capacity(), cap);
         assert_eq!(m.len(), i);
         assert!(!m.is_empty());
     }
