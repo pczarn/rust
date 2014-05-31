@@ -264,7 +264,7 @@ use iter::{Iterator, range_step_inclusive};
             debug_assert!(index < self.capacity());
 
             let idx  = index as int;
-            // let hashes = unsafe { (*self.chunks.as_ptr().offset(idx / 8)).ref0() };
+            // let hashes = unsafe { (*self.chunks.as_ptr().offset((idx as uint >> 3) as int)).ref0() };
             // TODO match all idxs with match?
             // let hash = unsafe { *(hashes.ref0() as *u64).offset(idx & 7) };
             let (hash, _, _) = unsafe { self.ref_idx(idx) };
@@ -289,7 +289,7 @@ use iter::{Iterator, range_step_inclusive};
         fn ref_idx<'a>(&'a self, idx: int) -> (&'a u64, &'a K, &'a V) {
             #![inline(always)]
             unsafe {
-                let &(ref hashes, ref keys, ref vals) = &*self.chunks.as_ptr().offset(idx / 8);
+                let &(ref hashes, ref keys, ref vals) = &*self.chunks.as_ptr().offset((idx as uint >> 3) as int);
                 (&'a *(hashes.ref0() as *u64).offset(idx & 7),
                  &'a *(keys.ref0() as * K ).offset(idx & 7),
                  &'a *(vals.ref0() as * V ).offset(idx & 7))
@@ -299,7 +299,7 @@ use iter::{Iterator, range_step_inclusive};
         fn ref_mut_idx<'a>(&'a mut self, idx: int) -> (&'a mut u64, &'a mut K, &'a mut V) {
             #![inline(always)]
             unsafe {
-                let &(ref mut hashes, ref mut keys, ref mut vals) = &mut *self.chunks.as_mut_ptr().offset(idx / 8);
+                let &(ref mut hashes, ref mut keys, ref mut vals) = &mut *self.chunks.as_mut_ptr().offset((idx as uint >> 3) as int);
                 (&'a mut *(hashes.mut0() as *mut u64).offset(idx & 7),
                  &'a mut *(keys.mut0()   as *mut  K ).offset(idx & 7),
                  &'a mut *(vals.mut0()   as *mut  V ).offset(idx & 7))
@@ -309,7 +309,7 @@ use iter::{Iterator, range_step_inclusive};
         fn ptr_idx<'a>(&'a self, idx: int) -> (*u64, *K, *V) {
             #![inline(always)]
             unsafe {
-                let &(ref hashes, ref keys, ref vals) = &*self.chunks.as_ptr().offset(idx / 8);
+                let &(ref hashes, ref keys, ref vals) = &*self.chunks.as_ptr().offset((idx as uint >> 3) as int);
                 ((hashes.ref0() as *u64).offset(idx & 7),
                  (keys.ref0() as * K ).offset(idx & 7),
                  (vals.ref0() as * V ).offset(idx & 7))
@@ -319,7 +319,7 @@ use iter::{Iterator, range_step_inclusive};
         fn ptr_mut_idx<'a>(&'a mut self, idx: int) -> (*mut u64, *mut K, *mut V) {
             #![inline(always)]
             unsafe {
-                let &(ref mut hashes, ref mut keys, ref mut vals) = &mut *self.chunks.as_mut_ptr().offset(idx / 8);
+                let &(ref mut hashes, ref mut keys, ref mut vals) = &mut *self.chunks.as_mut_ptr().offset((idx as uint >> 3) as int);
                 ((hashes.mut0() as *mut u64).offset(idx & 7),
                  (keys.mut0()   as *mut  K ).offset(idx & 7),
                  (vals.mut0()   as *mut  V ).offset(idx & 7))
@@ -331,7 +331,7 @@ use iter::{Iterator, range_step_inclusive};
             let idx = index.idx;
 
             unsafe {
-                let &(ref hashes, ref keys, ref vals) = &*self.chunks.as_ptr().offset(idx / 8);
+                let &(ref hashes, ref keys, ref vals) = &*self.chunks.as_ptr().offset((idx as uint >> 3) as int);
                 debug_assert!(*(hashes.ref0() as *u64).offset(idx & 7) != EMPTY_BUCKET);
                 (&'a *(keys.ref0() as *K).offset(idx & 7),
                  &'a *(vals.ref0() as *V).offset(idx & 7))
@@ -344,7 +344,7 @@ use iter::{Iterator, range_step_inclusive};
             let idx = index.idx;
 
             unsafe {
-            let &(ref hashes, ref mut keys, ref mut vals) = &mut *self.chunks.as_mut_ptr().offset(idx / 8);
+            let &(ref hashes, ref mut keys, ref mut vals) = &mut *self.chunks.as_mut_ptr().offset((idx as uint >> 3) as int);
                 debug_assert!(*(hashes.ref0() as *u64).offset(idx & 7) != EMPTY_BUCKET);
                 (&'a     *(keys.mut0() as *mut K).offset(idx & 7),
                  &'a mut *(vals.mut0() as *mut V).offset(idx & 7))
@@ -357,7 +357,7 @@ use iter::{Iterator, range_step_inclusive};
             let idx = index.idx;
 
             unsafe {
-                let &(ref mut hashes, ref mut keys, ref mut vals) = &mut *self.chunks.as_mut_ptr().offset(idx / 8);
+                let &(ref mut hashes, ref mut keys, ref mut vals) = &mut *self.chunks.as_mut_ptr().offset((idx as uint >> 3) as int);
                 debug_assert!(*(hashes.ref0() as *u64).offset(idx & 7) != EMPTY_BUCKET);
                 (transmute((hashes.mut0() as *mut u64).offset(idx & 7)),
                  &'a mut *(keys.mut0() as *mut K).offset(idx & 7),
@@ -403,7 +403,7 @@ use iter::{Iterator, range_step_inclusive};
             let (hash, _, _) = self.ptr_mut_idx(idx);
 
             let tup = unsafe {
-                // let &(ref mut hashes, ref keys, ref vals) = &mut *self.chunks.as_mut_ptr().offset(idx / 8);
+                // let &(ref mut hashes, ref keys, ref vals) = &mut *self.chunks.as_mut_ptr().offset((idx as uint >> 3) as int);
                 debug_assert!(*hash != EMPTY_BUCKET);
 
                 *hash = EMPTY_BUCKET;
