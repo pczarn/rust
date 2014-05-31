@@ -261,17 +261,23 @@ use iter::{Iterator, range_step_inclusive};
         /// the appropriate types to pass on to most of the other functions in
         /// this module.
         pub fn peek(&self, index: uint) -> BucketState {
+            // let hashes = unsafe { (*self.chunks.as_ptr().offset((idx as uint >> 3) as int)).ref0() };
+            // TODO match all idxs with match?
+            // let hash = unsafe { *(hashes.ref0() as *u64).offset(idx & 7) };
+            let (hash, _, _) = unsafe { self.ref_idx(index as int) };
+            self.internal_peek(index, hash)
+        }
+        pub fn internal_peek(&self, index: uint, hash: &u64) -> BucketState {
             debug_assert!(index < self.capacity());
 
             let idx  = index as int;
             // let hashes = unsafe { (*self.chunks.as_ptr().offset((idx as uint >> 3) as int)).ref0() };
             // TODO match all idxs with match?
             // let hash = unsafe { *(hashes.ref0() as *u64).offset(idx & 7) };
-            let (hash, _, _) = unsafe { self.ref_idx(idx) };
 
             let nocopy = marker::NoCopy;
 
-            match *hash { // or &full_hash =>
+            match *hash { // or hash { &full_hash =>
                 EMPTY_BUCKET =>
                     Empty(EmptyIndex {
                         idx:    idx,
