@@ -234,7 +234,7 @@ mod table {
             }
         }
 
-        // fn tuple_get idx & 7
+        // fn tuple_get idx % 8
 
         /// Reads a bucket at a given index, returning an enum indicating whether
         /// there's anything there or not. You need to match on this enum to get
@@ -244,13 +244,14 @@ mod table {
             debug_assert!(index < self.capacity());
 
             let idx  = index as int;
-            let hashes = unsafe { (*self.chunks.as_ptr().offset(idx >> 3)).ref0() };
+            // let hashes = unsafe { (*self.chunks.as_ptr().offset(idx / 8)).ref0() };
             // TODO match all idxs with match?
-            let hash = unsafe { *(hashes.ref0() as *u64).offset(idx & 0b111) };
+            // let hash = unsafe { *(hashes.ref0() as *u64).offset(idx % 8) };
+            let (hash, _, _) = unsafe { self.ref_idx(idx) };
 
             let nocopy = marker::NoCopy;
 
-            match hash {
+            match *hash { // or &full_hash =>
                 EMPTY_BUCKET =>
                     Empty(EmptyIndex {
                         idx:    idx,
@@ -267,37 +268,37 @@ mod table {
 
         fn ref_idx<'a>(&'a self, idx: int) -> (&'a u64, &'a K, &'a V) {
             unsafe {
-                let &(ref hashes, ref keys, ref vals) = &*self.chunks.as_ptr().offset(idx >> 3);
-                (&'a *(hashes.ref0() as *u64).offset(idx & 7),
-                 &'a *(keys.ref0() as * K ).offset(idx & 7),
-                 &'a *(vals.ref0() as * V ).offset(idx & 7))
+                let &(ref hashes, ref keys, ref vals) = &*self.chunks.as_ptr().offset(idx / 8);
+                (&'a *(hashes.ref0() as *u64).offset(idx % 8),
+                 &'a *(keys.ref0() as * K ).offset(idx % 8),
+                 &'a *(vals.ref0() as * V ).offset(idx % 8))
             }
         }
 
         fn ref_mut_idx<'a>(&'a mut self, idx: int) -> (&'a mut u64, &'a mut K, &'a mut V) {
             unsafe {
-                let &(ref mut hashes, ref mut keys, ref mut vals) = &mut *self.chunks.as_mut_ptr().offset(idx >> 3);
-                (&'a mut *(hashes.mut0() as *mut u64).offset(idx & 7),
-                 &'a mut *(keys.mut0()   as *mut  K ).offset(idx & 7),
-                 &'a mut *(vals.mut0()   as *mut  V ).offset(idx & 7))
+                let &(ref mut hashes, ref mut keys, ref mut vals) = &mut *self.chunks.as_mut_ptr().offset(idx / 8);
+                (&'a mut *(hashes.mut0() as *mut u64).offset(idx % 8),
+                 &'a mut *(keys.mut0()   as *mut  K ).offset(idx % 8),
+                 &'a mut *(vals.mut0()   as *mut  V ).offset(idx % 8))
             }
         }
 
         fn ptr_idx<'a>(&'a self, idx: int) -> (*u64, *K, *V) {
             unsafe {
-                let &(ref hashes, ref keys, ref vals) = &*self.chunks.as_ptr().offset(idx >> 3);
-                ((hashes.ref0() as *u64).offset(idx & 7),
-                 (keys.ref0() as * K ).offset(idx & 7),
-                 (vals.ref0() as * V ).offset(idx & 7))
+                let &(ref hashes, ref keys, ref vals) = &*self.chunks.as_ptr().offset(idx / 8);
+                ((hashes.ref0() as *u64).offset(idx % 8),
+                 (keys.ref0() as * K ).offset(idx % 8),
+                 (vals.ref0() as * V ).offset(idx % 8))
             }
         }
 
         fn ptr_mut_idx<'a>(&'a mut self, idx: int) -> (*mut u64, *mut K, *mut V) {
             unsafe {
-                let &(ref mut hashes, ref mut keys, ref mut vals) = &mut *self.chunks.as_mut_ptr().offset(idx >> 3);
-                ((hashes.mut0() as *mut u64).offset(idx & 7),
-                 (keys.mut0()   as *mut  K ).offset(idx & 7),
-                 (vals.mut0()   as *mut  V ).offset(idx & 7))
+                let &(ref mut hashes, ref mut keys, ref mut vals) = &mut *self.chunks.as_mut_ptr().offset(idx / 8);
+                ((hashes.mut0() as *mut u64).offset(idx % 8),
+                 (keys.mut0()   as *mut  K ).offset(idx % 8),
+                 (vals.mut0()   as *mut  V ).offset(idx % 8))
             }
         }
 
@@ -306,10 +307,10 @@ mod table {
             let idx = index.idx;
 
             unsafe {
-                let &(ref hashes, ref keys, ref vals) = &*self.chunks.as_ptr().offset(idx >> 3);
-                debug_assert!(*(hashes.ref0() as *u64).offset(idx & 7) != EMPTY_BUCKET);
-                (&'a *(keys.ref0() as *K).offset(idx & 7),
-                 &'a *(vals.ref0() as *V).offset(idx & 7))
+                let &(ref hashes, ref keys, ref vals) = &*self.chunks.as_ptr().offset(idx / 8);
+                debug_assert!(*(hashes.ref0() as *u64).offset(idx % 8) != EMPTY_BUCKET);
+                (&'a *(keys.ref0() as *K).offset(idx % 8),
+                 &'a *(vals.ref0() as *V).offset(idx % 8))
             }
         }
 
@@ -319,10 +320,10 @@ mod table {
             let idx = index.idx;
 
             unsafe {
-            let &(ref hashes, ref mut keys, ref mut vals) = &mut *self.chunks.as_mut_ptr().offset(idx >> 3);
-                debug_assert!(*(hashes.ref0() as *u64).offset(idx & 7) != EMPTY_BUCKET);
-                (&'a     *(keys.mut0() as *mut K).offset(idx & 7),
-                 &'a mut *(vals.mut0() as *mut V).offset(idx & 7))
+            let &(ref hashes, ref mut keys, ref mut vals) = &mut *self.chunks.as_mut_ptr().offset(idx / 8);
+                debug_assert!(*(hashes.ref0() as *u64).offset(idx % 8) != EMPTY_BUCKET);
+                (&'a     *(keys.mut0() as *mut K).offset(idx % 8),
+                 &'a mut *(vals.mut0() as *mut V).offset(idx % 8))
             }
         }
 
@@ -332,11 +333,11 @@ mod table {
             let idx = index.idx;
 
             unsafe {
-                let &(ref mut hashes, ref mut keys, ref mut vals) = &mut *self.chunks.as_mut_ptr().offset(idx >> 3);
-                debug_assert!(*(hashes.ref0() as *u64).offset(idx & 7) != EMPTY_BUCKET);
-                (transmute((hashes.mut0() as *mut u64).offset(idx & 7)),
-                 &'a mut *(keys.mut0() as *mut K).offset(idx & 7),
-                 &'a mut *(vals.mut0() as *mut V).offset(idx & 7))
+                let &(ref mut hashes, ref mut keys, ref mut vals) = &mut *self.chunks.as_mut_ptr().offset(idx / 8);
+                debug_assert!(*(hashes.ref0() as *u64).offset(idx % 8) != EMPTY_BUCKET);
+                (transmute((hashes.mut0() as *mut u64).offset(idx % 8)),
+                 &'a mut *(keys.mut0() as *mut K).offset(idx % 8),
+                 &'a mut *(vals.mut0() as *mut V).offset(idx % 8))
             }
         }
 
@@ -351,9 +352,9 @@ mod table {
             let idx = index.idx;
 
             unsafe {
-                let &(_, ref mut keys, ref mut vals) = &mut *self.chunks.as_mut_ptr().offset(idx >> 3);
-                move_val_init(&mut *(keys.mut0() as *mut K).offset(idx & 7), k);
-                move_val_init(&mut *(vals.mut0() as *mut V).offset(idx & 7), v);
+                let &(_, ref mut keys, ref mut vals) = &mut *self.chunks.as_mut_ptr().offset(idx / 8);
+                move_val_init(&mut *(keys.mut0() as *mut K).offset(idx % 8), k);
+                move_val_init(&mut *(vals.mut0() as *mut V).offset(idx % 8), v);
             }
 
             unsafe {
@@ -376,7 +377,7 @@ mod table {
             let (hash, _, _) = self.ptr_mut_idx(idx);
 
             let tup = unsafe {
-                // let &(ref mut hashes, ref keys, ref vals) = &mut *self.chunks.as_mut_ptr().offset(idx >> 3);
+                // let &(ref mut hashes, ref keys, ref vals) = &mut *self.chunks.as_mut_ptr().offset(idx / 8);
                 debug_assert!(*hash != EMPTY_BUCKET);
 
                 *hash = EMPTY_BUCKET;
@@ -853,6 +854,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
     /// If you already have the hash for the key lying around, use
     /// search_hashed.
     fn search(&self, k: &K) -> Option<table::FullIndex> {
+        println!("{}", self.table.chunks);
         self.search_hashed(&self.make_hash(k), k)
     }
 
@@ -1093,7 +1095,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
     }
 }
 
-impl<K: TotalEq + Hash<S>, V, S, H: Hasher<S>, R: ResizePolicy> HashMap<K, V, H, R> {
+impl<K: TotalEq + Hash<S>+Show, V:Show, S, H: Hasher<S>, R: ResizePolicy> HashMap<K, V, H, R> {
     /// The hashtable will never try to shrink below this size. You can use
     /// this function to reduce reallocations if your hashtable frequently
     /// grows and shrinks by large amounts.
