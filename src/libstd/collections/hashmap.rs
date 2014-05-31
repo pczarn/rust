@@ -2151,6 +2151,52 @@ mod test_map {
 
         assert_eq!(iter.size_hint(), (3, Some(3)));
     }
+
+    #[test]
+    fn test_resize_policy() {
+        let mut m = HashMap::new();
+
+        assert_eq!(m.len(), 0);
+        assert!(m.is_empty());
+
+        let initial_cap = m.table.capacity();
+        m.reserve(initial_cap * 2);
+        let cap = m.table.capacity();
+
+        assert_eq!(cap, initial_cap * 2);
+
+        let mut i = 0u;
+        for _ in range(0, cap * 3 / 4) {
+            m.insert(i, i);
+            i += 1;
+        }
+
+        assert_eq!(m.len(), i);
+        assert_eq!(m.table.capacity(), cap);
+
+        for _ in range(0, cap / 4) {
+            m.insert(i, i);
+            i += 1;
+        }
+
+        let new_cap = m.table.capacity();
+        assert_eq!(new_cap, cap * 2);
+
+        for _ in range(0, cap / 2) {
+            i -= 1;
+            m.remove(&i);
+            assert_eq!(m.table.capacity(), new_cap);
+        }
+
+        for _ in range(0, cap / 2 - 1) {
+            i -= 1;
+            m.remove(&i);
+        }
+
+        assert_eq!(m.table.capacity(), cap);
+        assert_eq!(m.len(), i);
+        assert!(!m.is_empty());
+    }
 }
 
 #[cfg(test)]
