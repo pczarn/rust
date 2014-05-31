@@ -108,7 +108,8 @@ mod table {
 
     #[unsafe_no_drop_flag]
     pub struct RawTable<K, V> {
-        chunks: RawChunks<K, V>,
+        // rm pub
+        pub chunks: RawChunks<K, V>,
     }
 
     /// Represents an index into a `RawTable` with no key or value in it.
@@ -352,9 +353,11 @@ mod table {
             let idx = index.idx;
 
             unsafe {
-                let &(_, ref mut keys, ref mut vals) = &mut *self.chunks.as_mut_ptr().offset(idx / 8);
-                move_val_init(&mut *(keys.mut0() as *mut K).offset(idx % 8), k);
-                move_val_init(&mut *(vals.mut0() as *mut V).offset(idx % 8), v);
+                let (hashes, keys, vals) = self.ref_mut_idx(idx);
+                debug_assert_eq!(*hashes, EMPTY_BUCKET);
+                *hashes = hash.inspect();
+                move_val_init(keys, k);
+                move_val_init(vals, v);
             }
 
             unsafe {
@@ -571,7 +574,7 @@ mod table {
     #[unsafe_destructor]
     impl<K, V> Drop for RawTable<K, V> {
         fn drop(&mut self) {
-            println!("start drop");
+            // println!("start drop");
             // This is in reverse because we're likely to have partially taken
             // some elements out with `.move_iter()` from the front.
             for i in range_step_inclusive(self.chunks.capacity() as int - 1, 0, -1) {
@@ -585,7 +588,7 @@ mod table {
                 }
             }
 
-            println!("end drop");
+            // println!("end drop");
 
             // assert_eq!(self.size(), 0);
         }
@@ -854,7 +857,6 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
     /// If you already have the hash for the key lying around, use
     /// search_hashed.
     fn search(&self, k: &K) -> Option<table::FullIndex> {
-        println!("{}", self.table.chunks);
         self.search_hashed(&self.make_hash(k), k)
     }
 
@@ -1095,7 +1097,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
     }
 }
 
-impl<K: TotalEq + Hash<S>+Show, V:Show, S, H: Hasher<S>, R: ResizePolicy> HashMap<K, V, H, R> {
+impl<K: TotalEq + Hash<S>, V, S, H: Hasher<S>, R: ResizePolicy> HashMap<K, V, H, R> {
     /// The hashtable will never try to shrink below this size. You can use
     /// this function to reduce reallocations if your hashtable frequently
     /// grows and shrinks by large amounts.
@@ -1713,7 +1715,9 @@ mod test_map {
     fn test_create_capacity_zero() {
         let mut m = HashMap::with_capacity(0);
 
-        assert!(m.insert(1i, 1i));
+        assert!(m.insert(1, 1));
+        // println!("{:?}", m);
+        // println!("{}", m.table.chunks);
 
         assert!(m.contains_key(&1));
         assert!(!m.contains_key(&0));
@@ -2402,7 +2406,7 @@ mod test_set {
             assert!(expected.contains(x));
             i += 1
         }
-        println!("{}", i);
+        // println!("{}", i);
         assert_eq!(i, expected.len());
     }
 
