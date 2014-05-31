@@ -126,7 +126,7 @@ use iter::{Iterator, range_step_inclusive};
 
     /// Represents an index into a `RawTable` with no key or value in it.
     pub struct EmptyIndex {
-        idx:    int,
+        pub idx:    int,
         nocopy: marker::NoCopy,
     }
 
@@ -149,6 +149,20 @@ use iter::{Iterator, range_step_inclusive};
         #[inline(always)]
         pub fn raw_index(&self) -> uint { self.idx as uint }
     }
+
+    // pub struct CachedEmpty {
+    //     pos: uint,
+    //     index: EmptyIndex
+    // }
+
+    // pub struct CachedFull {
+    //     pos: uint,
+    //     index: EmptyIndex
+    // }
+
+    // impl CachedIndex<EmptyIndex> {
+    //     fn 
+    // }
 
     /// Represents the state of a bucket: it can either have a key/value
     /// pair (be full) or not (be empty). You cannot `take` empty buckets,
@@ -265,9 +279,9 @@ use iter::{Iterator, range_step_inclusive};
             // TODO match all idxs with match?
             // let hash = unsafe { *(hashes.ref0() as *u64).offset(idx & 7) };
             let (hash, _, _) = unsafe { self.ref_idx(index as int) };
-            self.internal_peek(index, hash)
+            self.internal_peek(index, *hash)
         }
-        pub fn internal_peek(&self, index: uint, hash: &u64) -> BucketState {
+        pub fn internal_peek(&self, index: uint, hash: u64) -> BucketState {
             debug_assert!(index < self.capacity());
 
             let idx  = index as int;
@@ -277,7 +291,7 @@ use iter::{Iterator, range_step_inclusive};
 
             let nocopy = marker::NoCopy;
 
-            match *hash { // or hash { &full_hash =>
+            match hash { // or hash { &full_hash =>
                 EMPTY_BUCKET =>
                     Empty(EmptyIndex {
                         idx:    idx,
@@ -322,13 +336,35 @@ use iter::{Iterator, range_step_inclusive};
             }
         }
 
-        fn ptr_mut_idx<'a>(&'a mut self, idx: int) -> (*mut u64, *mut K, *mut V) {
+        pub fn ptr_mut_idx<'a>(&'a mut self, idx: int) -> (*mut u64, *mut K, *mut V) {
             #![inline(always)]
             unsafe {
-                let &(ref mut hashes, ref mut keys, ref mut vals) = &mut *self.chunks.as_mut_ptr().offset((idx as uint >> 3) as int);
-                ((hashes.mut0() as *mut u64).offset(idx & 7),
-                 (keys.mut0()   as *mut  K ).offset(idx & 7),
-                 (vals.mut0()   as *mut  V ).offset(idx & 7))
+                // let &(ref mut hashes, ref mut keys, ref mut vals) = &mut *self.chunks.as_mut_ptr().offset((idx as uint >> 3) as int);
+                // ((hashes.mut0() as *mut u64).offset(idx & 7),
+                //  (keys.mut0()   as *mut  K ).offset(idx & 7),
+                //  (vals.mut0()   as *mut  V ).offset(idx & 7))
+                let idx = idx as uint;
+                let base = self.chunks.as_mut_ptr() as *mut u8;
+                let chk: uint = size_of::<RawChk<K, V>>() >> 3;
+                let k = size_of::<K>() as int;
+                let v = size_of::<V>() as int;
+                // let koff = base.offset((chk * idx) as int + (idx & 7) as int * (k - chk as int) + 64)
+                let hr = base.offset((chk * idx) as int + (idx & 7) as int * (8i - chk as int));
+                let kr = base.offset((chk * idx) as int + (idx & 7) as int * (k - chk as int) + 64);
+                let vr = base.offset((chk * idx) as int + (idx & 7) as int * (v - chk as int) + 64 + k * 8);
+                (hr as *mut u64, kr as *mut K, vr as *mut V)
+            }
+        }
+
+        pub fn hash_pos<'a>(&'a mut self, idx: int) -> *mut u64 {
+            #![inline(always)]
+            unsafe {
+                // let &(ref mut hashes, _, _) = &mut *self.chunks.as_mut_ptr().offset((idx as uint >> 3) as int);
+                // (hashes.mut0() as *mut u64).offset(idx & 7)
+                let idx = idx as uint;
+                let base = self.chunks.as_mut_ptr();
+                let chksz: uint = size_of::<RawChk<K, V>>();
+                (base as *mut u8).offset(((chksz >> 3) * idx) as int + (idx & 7) as int * (8i - (chksz >> 3) as int)) as *mut u64
             }
         }
 
@@ -379,21 +415,25 @@ use iter::{Iterator, range_step_inclusive};
         ///
         /// Use `make_hash` to construct a `SafeHash` to pass to this function.
         pub fn put(&mut self, index: EmptyIndex, hash: SafeHash, k: K, v: V) -> FullIndex {
+            unsafe {
+                let x = self.ptr_mut_idx(index.idx);
+                self.internal_put(index, x, hash, k, v)
+            }
+        }
+        pub fn internal_put(&mut self, index: EmptyIndex, (hash_pos, key_pos, val_pos): (*mut u64, *mut K, *mut V), hash: SafeHash, k: K, v: V) -> FullIndex {
             let idx = index.idx;
 
             unsafe {
-                let (hashes, keys, vals) = self.ref_mut_idx(idx);
-                debug_assert_eq!(*hashes, EMPTY_BUCKET);
-                *hashes = hash.inspect();
-                overwrite(keys, k);
-                overwrite(vals, v);
+                debug_assert_eq!(*hash_pos, EMPTY_BUCKET);
+                *hash_pos = hash.inspect();
+                overwrite(&mut *key_pos, k);
+                overwrite(&mut *val_pos, v);
             }
 
             unsafe {
                 let len = self.size() + 1;
                 self.chunks.set_len(len);
             }
-
 
             FullIndex { idx: idx, hash: hash, nocopy: marker::NoCopy }
         }
@@ -432,6 +472,32 @@ use iter::{Iterator, range_step_inclusive};
 
             tup
         }
+
+        // pub fn internal_take(&mut self, index: FullIndex) -> (EmptyIndex, K, V) {
+        //     let idx  = index.idx;
+
+        //     let (_, key, val) = self.ptr_idx(idx);
+        //     let (hash, _, _) = self.ptr_mut_idx(idx);
+
+        //     let tup = unsafe {
+        //         // let &(ref mut hashes, ref keys, ref vals) = &mut *self.chunks.as_mut_ptr().offset((idx as uint >> 3) as int);
+        //         debug_assert!(*hash != EMPTY_BUCKET);
+
+        //         *hash = EMPTY_BUCKET;
+
+        //         // Drop the mutable constraint.
+        //         let k = ptr::read(key);
+        //         let v = ptr::read(val);
+        //         (EmptyIndex { idx: idx, nocopy: marker::NoCopy }, k, v)
+        //     };
+
+        //     unsafe {
+        //         let len = self.size() - 1;
+        //         self.chunks.set_len(len);
+        //     }
+
+        //     tup
+        // }
 
         /// The hashtable's capacity, similar to a vector's.
         pub fn capacity(&self) -> uint {
@@ -1188,14 +1254,17 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
     /// 'hash', 'k', and 'v' are the elements to robin hood into the hashtable.
     fn robin_hood(&mut self, mut index: table::FullIndex, mut dib_param: uint,
                   mut hash: table::SafeHash, mut k: K, mut v: V) {
-        'outer: loop {
-            let (old_hash, old_key, old_val) = {
-                let (old_hash_ref, old_key_ref, old_val_ref) =
-                        self.table.read_all_mut(&index);
+        #![inline(always)]
+        let (mut hash_ref, mut key_ref, mut val_ref) = self.table.ptr_mut_idx(index.raw_index() as int);
 
-                let old_hash = replace(old_hash_ref, hash);
-                let old_key  = replace(old_key_ref,  k);
-                let old_val  = replace(old_val_ref,  v);
+        'outer: loop { unsafe {
+            let (old_hash, old_key, old_val) = {
+                // let (old_hash_ref, old_key_ref, old_val_ref) =
+                //         self.table.read_all_mut(&index);
+
+                let old_hash = replace(&mut *(hash_ref as *mut table::SafeHash), hash);
+                let old_key  = replace(&mut *key_ref,  k);
+                let old_val  = replace(&mut *val_ref,  v);
 
                 (old_hash, old_key, old_val)
             };
@@ -1203,10 +1272,12 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
             let mut probe = self.probe_next(index.raw_index());
 
             for dib in range(dib_param + 1, self.table.size()) {
-                let full_index = match self.table.peek(probe) {
+                let (hr, kr, vr) = self.table.ptr_mut_idx(probe as int); // TODO uint only?
+
+                let full_index = match self.table.internal_peek(probe, *hr) {
                     table::Empty(idx) => {
                         // Finally. A hole!
-                        self.table.put(idx, old_hash, old_key, old_val);
+                        self.table.internal_put(idx, (hr, kr, vr), old_hash, old_key, old_val);
                         return;
                     },
                     table::Full(idx) => idx
@@ -1216,6 +1287,9 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
 
                 // Robin hood! Steal the spot.
                 if probe_dib < dib {
+                    hash_ref = hr;
+                    key_ref = kr;
+                    val_ref = vr;
                     index = full_index;
                     dib_param = probe_dib;
                     hash = old_hash;
@@ -1228,7 +1302,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
             }
 
             fail!("HashMap fatal error: 100% load factor?");
-        }
+        }}
     }
 
     /// Insert a pre-hashed key-value pair, without first checking
