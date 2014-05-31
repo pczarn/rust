@@ -733,7 +733,7 @@ impl DefaultResizePolicy {
 /// }
 /// ```
 #[deriving(Clone)]
-pub struct HashMap<K, V, H = sip::SipHasher> {
+pub struct HashMap<K, V, H = sip::SipHasher, R = DefaultResizePolicy> {
     // All hashes are keyed on these values, to prevent hash collision attacks.
     hasher: H,
 
@@ -1072,7 +1072,9 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
             table:         table::RawTable::new(cap),
         }
     }
+}
 
+impl<K: TotalEq + Hash<S>, V, S, H: Hasher<S>, R: ResizePolicy> HashMap<K, V, H, R> {
     /// The hashtable will never try to shrink below this size. You can use
     /// this function to reduce reallocations if your hashtable frequently
     /// grows and shrinks by large amounts.
@@ -1489,8 +1491,8 @@ pub type SetMoveItems<K> =
 /// HashMap where the value is (). As with the `HashMap` type, a `HashSet`
 /// requires that the elements implement the `Eq` and `Hash` traits.
 #[deriving(Clone)]
-pub struct HashSet<T, H = sip::SipHasher> {
-    map: HashMap<T, (), H>
+pub struct HashSet<T, H = sip::SipHasher, R = DefaultResizePolicy> {
+    map: HashMap<T, (), H, R>
 }
 
 impl<T: Eq + Hash<S>, S, H: Hasher<S>> PartialEq for HashSet<T, H> {
@@ -1514,11 +1516,11 @@ impl<T: Eq + Hash<S>, S, H: Hasher<S>> Mutable for HashSet<T, H> {
 impl<T: Eq + Hash<S>, S, H: Hasher<S>> Set<T> for HashSet<T, H> {
     fn contains(&self, value: &T) -> bool { self.map.contains_key(value) }
 
-    fn is_disjoint(&self, other: &HashSet<T, H>) -> bool {
+    fn is_disjoint(&self, other: &HashSet<T, H, R>) -> bool {
         self.iter().all(|v| !other.contains(v))
     }
 
-    fn is_subset(&self, other: &HashSet<T, H>) -> bool {
+    fn is_subset(&self, other: &HashSet<T, H, R>) -> bool {
         self.iter().all(|v| other.contains(v))
     }
 }
@@ -1561,7 +1563,9 @@ impl<T: Eq + Hash<S>, S, H: Hasher<S>> HashSet<T, H> {
     pub fn with_capacity_and_hasher(capacity: uint, hasher: H) -> HashSet<T, H> {
         HashSet { map: HashMap::with_capacity_and_hasher(capacity, hasher) }
     }
+}
 
+impl<T: TotalEq + Hash<S>, S, H: Hasher<S>, R: ResizePolicy> HashSet<T, H, R> {
     /// Reserve space for at least `n` elements in the hash table.
     pub fn reserve(&mut self, n: uint) {
         self.map.reserve(n)
@@ -1587,7 +1591,7 @@ impl<T: Eq + Hash<S>, S, H: Hasher<S>> HashSet<T, H> {
     }
 
     /// Visit the values representing the difference
-    pub fn difference<'a>(&'a self, other: &'a HashSet<T, H>) -> SetAlgebraItems<'a, T, H> {
+    pub fn difference<'a>(&'a self, other: &'a HashSet<T, H, R>) -> SetAlgebraItems<'a, T, H, R> {
         Repeat::new(other).zip(self.iter())
             .filter_map(|(other, elt)| {
                 if !other.contains(elt) { Some(elt) } else { None }
@@ -1595,14 +1599,14 @@ impl<T: Eq + Hash<S>, S, H: Hasher<S>> HashSet<T, H> {
     }
 
     /// Visit the values representing the symmetric difference
-    pub fn symmetric_difference<'a>(&'a self, other: &'a HashSet<T, H>)
-        -> Chain<SetAlgebraItems<'a, T, H>, SetAlgebraItems<'a, T, H>> {
+    pub fn symmetric_difference<'a>(&'a self, other: &'a HashSet<T, H, R>)
+        -> Chain<SetAlgebraItems<'a, T, H, R>, SetAlgebraItems<'a, T, H, R>> {
         self.difference(other).chain(other.difference(self))
     }
 
     /// Visit the values representing the intersection
-    pub fn intersection<'a>(&'a self, other: &'a HashSet<T, H>)
-        -> SetAlgebraItems<'a, T, H> {
+    pub fn intersection<'a>(&'a self, other: &'a HashSet<T, H, R>)
+        -> SetAlgebraItems<'a, T, H, R> {
         Repeat::new(other).zip(self.iter())
             .filter_map(|(other, elt)| {
                 if other.contains(elt) { Some(elt) } else { None }
@@ -1610,8 +1614,8 @@ impl<T: Eq + Hash<S>, S, H: Hasher<S>> HashSet<T, H> {
     }
 
     /// Visit the values representing the union
-    pub fn union<'a>(&'a self, other: &'a HashSet<T, H>)
-        -> Chain<SetItems<'a, T>, SetAlgebraItems<'a, T, H>> {
+    pub fn union<'a>(&'a self, other: &'a HashSet<T, H, R>)
+        -> Chain<SetItems<'a, T>, SetAlgebraItems<'a, T, H, R>> {
         self.iter().chain(other.difference(self))
     }
 }
@@ -1655,9 +1659,9 @@ impl<T: Eq + Hash<S>, S, H: Hasher<S> + Default> Default for HashSet<T, H> {
 // `Repeat` is used to feed the filter closure an explicit capture
 // of a reference to the other set
 /// Set operations iterator
-pub type SetAlgebraItems<'a, T, H> =
-    FilterMap<'static, (&'a HashSet<T, H>, &'a T), &'a T,
-              Zip<Repeat<&'a HashSet<T, H>>, SetItems<'a, T>>>;
+pub type SetAlgebraItems<'a, T, H, R> =
+    FilterMap<'static, (&'a HashSet<T, H, R>, &'a T), &'a T,
+              Zip<Repeat<&'a HashSet<T, H, R>>, SetItems<'a, T>>>;
 
 #[cfg(test)]
 mod test_map {
