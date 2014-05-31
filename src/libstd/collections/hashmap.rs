@@ -218,9 +218,9 @@ mod table {
 
         /// Does not initialize the buckets. The caller should ensure they,
         /// at the very least, set every hash to EMPTY_BUCKET.
-        unsafe fn new_uninitialized(capacity: uint) -> RawTable<K, V> {
+        unsafe fn new_uninitialized(vec_capacity: uint) -> RawTable<K, V> {
             RawTable {
-                chunks: Vec::with_capacity(capacity),
+                chunks: Vec::with_capacity(vec_capacity),
             }
         }
 
@@ -228,14 +228,16 @@ mod table {
         /// initially empty.
         #[allow(experimental)]
         pub fn new(capacity: uint) -> RawTable<K, V> {
+            // TODO write capacity >> 3?
+            let vec_cap = capacity >> 3;
             unsafe {
-                let mut ret = RawTable::new_uninitialized(capacity);
-                set_memory(ret.chunks.as_mut_ptr(), 0u8, capacity);
+                let mut ret = RawTable::new_uninitialized(vec_cap);
+                set_memory(ret.chunks.as_mut_ptr(), 0u8, vec_cap);
                 ret
             }
         }
 
-        // fn tuple_get idx % 8
+        // fn tuple_get idx & 7
 
         /// Reads a bucket at a given index, returning an enum indicating whether
         /// there's anything there or not. You need to match on this enum to get
@@ -247,7 +249,7 @@ mod table {
             let idx  = index as int;
             // let hashes = unsafe { (*self.chunks.as_ptr().offset(idx / 8)).ref0() };
             // TODO match all idxs with match?
-            // let hash = unsafe { *(hashes.ref0() as *u64).offset(idx % 8) };
+            // let hash = unsafe { *(hashes.ref0() as *u64).offset(idx & 7) };
             let (hash, _, _) = unsafe { self.ref_idx(idx) };
 
             let nocopy = marker::NoCopy;
@@ -268,38 +270,42 @@ mod table {
         }
 
         fn ref_idx<'a>(&'a self, idx: int) -> (&'a u64, &'a K, &'a V) {
+            #![inline(always)]
             unsafe {
                 let &(ref hashes, ref keys, ref vals) = &*self.chunks.as_ptr().offset(idx / 8);
-                (&'a *(hashes.ref0() as *u64).offset(idx % 8),
-                 &'a *(keys.ref0() as * K ).offset(idx % 8),
-                 &'a *(vals.ref0() as * V ).offset(idx % 8))
+                (&'a *(hashes.ref0() as *u64).offset(idx & 7),
+                 &'a *(keys.ref0() as * K ).offset(idx & 7),
+                 &'a *(vals.ref0() as * V ).offset(idx & 7))
             }
         }
 
         fn ref_mut_idx<'a>(&'a mut self, idx: int) -> (&'a mut u64, &'a mut K, &'a mut V) {
+            #![inline(always)]
             unsafe {
                 let &(ref mut hashes, ref mut keys, ref mut vals) = &mut *self.chunks.as_mut_ptr().offset(idx / 8);
-                (&'a mut *(hashes.mut0() as *mut u64).offset(idx % 8),
-                 &'a mut *(keys.mut0()   as *mut  K ).offset(idx % 8),
-                 &'a mut *(vals.mut0()   as *mut  V ).offset(idx % 8))
+                (&'a mut *(hashes.mut0() as *mut u64).offset(idx & 7),
+                 &'a mut *(keys.mut0()   as *mut  K ).offset(idx & 7),
+                 &'a mut *(vals.mut0()   as *mut  V ).offset(idx & 7))
             }
         }
 
         fn ptr_idx<'a>(&'a self, idx: int) -> (*u64, *K, *V) {
+            #![inline(always)]
             unsafe {
                 let &(ref hashes, ref keys, ref vals) = &*self.chunks.as_ptr().offset(idx / 8);
-                ((hashes.ref0() as *u64).offset(idx % 8),
-                 (keys.ref0() as * K ).offset(idx % 8),
-                 (vals.ref0() as * V ).offset(idx % 8))
+                ((hashes.ref0() as *u64).offset(idx & 7),
+                 (keys.ref0() as * K ).offset(idx & 7),
+                 (vals.ref0() as * V ).offset(idx & 7))
             }
         }
 
         fn ptr_mut_idx<'a>(&'a mut self, idx: int) -> (*mut u64, *mut K, *mut V) {
+            #![inline(always)]
             unsafe {
                 let &(ref mut hashes, ref mut keys, ref mut vals) = &mut *self.chunks.as_mut_ptr().offset(idx / 8);
-                ((hashes.mut0() as *mut u64).offset(idx % 8),
-                 (keys.mut0()   as *mut  K ).offset(idx % 8),
-                 (vals.mut0()   as *mut  V ).offset(idx % 8))
+                ((hashes.mut0() as *mut u64).offset(idx & 7),
+                 (keys.mut0()   as *mut  K ).offset(idx & 7),
+                 (vals.mut0()   as *mut  V ).offset(idx & 7))
             }
         }
 
@@ -309,9 +315,9 @@ mod table {
 
             unsafe {
                 let &(ref hashes, ref keys, ref vals) = &*self.chunks.as_ptr().offset(idx / 8);
-                debug_assert!(*(hashes.ref0() as *u64).offset(idx % 8) != EMPTY_BUCKET);
-                (&'a *(keys.ref0() as *K).offset(idx % 8),
-                 &'a *(vals.ref0() as *V).offset(idx % 8))
+                debug_assert!(*(hashes.ref0() as *u64).offset(idx & 7) != EMPTY_BUCKET);
+                (&'a *(keys.ref0() as *K).offset(idx & 7),
+                 &'a *(vals.ref0() as *V).offset(idx & 7))
             }
         }
 
@@ -322,9 +328,9 @@ mod table {
 
             unsafe {
             let &(ref hashes, ref mut keys, ref mut vals) = &mut *self.chunks.as_mut_ptr().offset(idx / 8);
-                debug_assert!(*(hashes.ref0() as *u64).offset(idx % 8) != EMPTY_BUCKET);
-                (&'a     *(keys.mut0() as *mut K).offset(idx % 8),
-                 &'a mut *(vals.mut0() as *mut V).offset(idx % 8))
+                debug_assert!(*(hashes.ref0() as *u64).offset(idx & 7) != EMPTY_BUCKET);
+                (&'a     *(keys.mut0() as *mut K).offset(idx & 7),
+                 &'a mut *(vals.mut0() as *mut V).offset(idx & 7))
             }
         }
 
@@ -335,10 +341,10 @@ mod table {
 
             unsafe {
                 let &(ref mut hashes, ref mut keys, ref mut vals) = &mut *self.chunks.as_mut_ptr().offset(idx / 8);
-                debug_assert!(*(hashes.ref0() as *u64).offset(idx % 8) != EMPTY_BUCKET);
-                (transmute((hashes.mut0() as *mut u64).offset(idx % 8)),
-                 &'a mut *(keys.mut0() as *mut K).offset(idx % 8),
-                 &'a mut *(vals.mut0() as *mut V).offset(idx % 8))
+                debug_assert!(*(hashes.ref0() as *u64).offset(idx & 7) != EMPTY_BUCKET);
+                (transmute((hashes.mut0() as *mut u64).offset(idx & 7)),
+                 &'a mut *(keys.mut0() as *mut K).offset(idx & 7),
+                 &'a mut *(vals.mut0() as *mut V).offset(idx & 7))
             }
         }
 
@@ -406,7 +412,7 @@ mod table {
 
         /// The hashtable's capacity, similar to a vector's.
         pub fn capacity(&self) -> uint {
-            self.chunks.capacity()
+            self.chunks.capacity() << 3
         }
 
         /// The number of elements ever `put` in the hashtable, minus the number
@@ -541,7 +547,7 @@ mod table {
     impl<K: Clone, V: Clone> Clone for RawTable<K, V> {
         fn clone(&self) -> RawTable<K, V> {
             unsafe {
-                let mut new_ht = RawTable::new_uninitialized(self.capacity());
+                let mut new_ht = RawTable::new_uninitialized(self.chunks.capacity());
 
                 for i in range(0, self.capacity()) {
                     match self.peek(i) {
@@ -577,7 +583,7 @@ mod table {
             // println!("start drop");
             // This is in reverse because we're likely to have partially taken
             // some elements out with `.move_iter()` from the front.
-            for i in range_step_inclusive(self.chunks.capacity() as int - 1, 0, -1) {
+            for i in range_step_inclusive(self.capacity() as int - 1, 0, -1) {
                 // Check if the size is 0, so we don't do a useless scan when
                 // dropping empty tables such as on resize.
                 if self.size() == 0 { break }
