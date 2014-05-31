@@ -110,7 +110,7 @@ mod table {
     pub struct RawTable<K, V> {
         chunks: RawChunks<K, V>,
         // capacity: uint,
-        size:     uint,
+        // size:     uint,
         // hashes:   *mut u64,
 
         // keys:     *mut K,
@@ -254,7 +254,7 @@ mod table {
             RawTable {
                 chunks: Vec::with_capacity(capacity),
                 // capacity: capacity,
-                size:     0,
+                // size:     0,
                 // hashes:   hashes,
                 // keys:     keys,
                 // vals:     vals,
@@ -437,7 +437,11 @@ mod table {
                 move_val_init(&mut *(vals.mut0() as *mut V).offset(idx & 7), v);
             }
 
-            self.size += 1;
+            unsafe {
+                let len = self.size() + 1;
+                self.chunks.set_len(len);
+            }
+
 
             FullIndex { idx: idx, hash: hash, nocopy: marker::NoCopy }
         }
@@ -449,8 +453,8 @@ mod table {
         pub fn take(&mut self, index: FullIndex) -> (EmptyIndex, K, V) {
             let idx  = index.idx;
 
-            unsafe {
-            let &(ref mut hashes, ref keys, ref vals) = &mut *self.chunks.as_mut_ptr().offset(idx >> 3);
+            let tup = unsafe {
+                let &(ref mut hashes, ref keys, ref vals) = &mut *self.chunks.as_mut_ptr().offset(idx >> 3);
                 debug_assert!(*(hashes.ref0() as *u64).offset(idx & 7) != EMPTY_BUCKET);
 
                 *(hashes.mut0() as *mut u64).offset(idx & 7) = EMPTY_BUCKET;
@@ -463,11 +467,15 @@ mod table {
 
                 let k = ptr::read((keys.ref0() as *K).offset(idx & 7));
                 let v = ptr::read((vals.ref0() as *V).offset(idx & 7));
-
-                self.size -= 1;
-
                 (EmptyIndex { idx: idx, nocopy: marker::NoCopy }, k, v)
+            };
+
+            unsafe {
+                let len = self.size() - 1;
+                self.chunks.set_len(len);
             }
+            
+            tup
         }
 
         /// The hashtable's capacity, similar to a vector's.
@@ -478,7 +486,7 @@ mod table {
         /// The number of elements ever `put` in the hashtable, minus the number
         /// of elements ever `take`n.
         pub fn size(&self) -> uint {
-            self.size
+            self.chunks.len()
         }
 
         pub fn iter<'a>(&'a self) -> Entries<'a, K, V> {
@@ -629,7 +637,8 @@ mod table {
                     }
                 }
 
-                new_ht.size = self.size();
+                let len = self.size();
+                new_ht.chunks.set_len(len);
 
                 new_ht
             }
@@ -644,7 +653,7 @@ mod table {
             for i in range_step_inclusive(self.chunks.capacity() as int - 1, 0, -1) {
                 // Check if the size is 0, so we don't do a useless scan when
                 // dropping empty tables such as on resize.
-                if self.size == 0 { break }
+                if self.size() == 0 { break }
 
                 match self.peek(i as uint) {
                     Empty(_)  => {},
@@ -652,7 +661,7 @@ mod table {
                 }
             }
 
-            assert_eq!(self.size, 0);
+            assert_eq!(self.size(), 0);
 
             // let x = self.chunks;
 
