@@ -164,6 +164,12 @@ use iter::{Iterator, range_step_inclusive};
     //     fn 
     // }
 
+    struct MutSafeIdx<'a, K, V> {
+        h: &'a mut u64,
+        k: &'a mut K,
+        v: &'a mut V,
+    }
+
     /// Represents the state of a bucket: it can either have a key/value
     /// pair (be full) or not (be empty). You cannot `take` empty buckets,
     /// and you cannot `put` into full buckets.
@@ -177,6 +183,17 @@ use iter::{Iterator, range_step_inclusive};
     #[deriving(PartialEq)]
     pub struct SafeHash {
         hash: u64,
+    }
+
+    impl<'a, K, V> MutSafeIdx<'a, K, V> {
+        pub fn put(&mut self, hash: SafeHash, key: K, val: V) {
+            debug_assert_eq!(*self.h, EMPTY_BUCKET);
+            *self.h = hash.inspect();
+            unsafe {
+                overwrite(self.k, key);
+                overwrite(self.v, val);
+            }
+        }
     }
 
     impl SafeHash {
@@ -238,6 +255,22 @@ use iter::{Iterator, range_step_inclusive};
         assert_eq!(calculate_offsets(128, 8, 15, 1, 4, 4 ), (8, 0, 128, 144, 148));
         assert_eq!(calculate_offsets(3,   1, 2,  1, 1, 1 ), (1, 0, 3,   5,   6));
         assert_eq!(calculate_offsets(6,   2, 12, 4, 24, 8), (8, 0, 8,   24,  48));
+    }
+
+    fn ary_offset<'a, T>(ary: &'a mut (T,T,T,T,T,T,T,T,), idx: int) -> &'a mut T {
+        #![inline(always)]
+        use std::mem::uninitialized;
+        match idx as uint & 7 {
+            0 => ary.mut0(),
+            1 => ary.mut1(),
+            2 => ary.mut2(),
+            3 => ary.mut3(),
+            4 => ary.mut4(),
+            5 => ary.mut5(),
+            6 => ary.mut6(),
+            7 => ary.mut7(),
+            _ => unsafe { uninitialized() }
+        }
     }
 
     impl<K, V> RawTable<K, V> {
@@ -407,6 +440,20 @@ use iter::{Iterator, range_step_inclusive};
             }
         }
 
+        /// Read everything, mutably.
+        pub fn safe_all_mut<'a>(&'a mut self, idx: int) -> MutSafeIdx<'a, K, V> {
+            // makes insert and new_insert_drop slow!
+            let &(ref mut hshs, ref mut keys, ref mut vals) = unsafe {
+                &mut *self.chunks.as_mut_ptr().offset((idx as uint >> 3) as int)
+            };
+
+            debug_assert!(*ary_offset(hshs, idx) != EMPTY_BUCKET);
+            MutSafeIdx { h: unsafe { transmute(ary_offset(hshs, idx)) },
+                k: &'a mut *ary_offset(keys, idx),
+                v: &'a mut *ary_offset(vals, idx)
+            }
+        }
+
         /// Puts a key and value pair, along with the key's hash, into a given
         /// index in the hashtable. Note how the `EmptyIndex` is 'moved' into this
         /// function, because that slot will no longer be empty when we return!
@@ -415,19 +462,12 @@ use iter::{Iterator, range_step_inclusive};
         ///
         /// Use `make_hash` to construct a `SafeHash` to pass to this function.
         pub fn put(&mut self, index: EmptyIndex, hash: SafeHash, k: K, v: V) -> FullIndex {
-            unsafe {
-                let x = self.ptr_mut_idx(index.idx);
-                self.internal_put(index, x, hash, k, v)
-            }
-        }
-        pub fn internal_put(&mut self, index: EmptyIndex, (hash_pos, key_pos, val_pos): (*mut u64, *mut K, *mut V), hash: SafeHash, k: K, v: V) -> FullIndex {
             let idx = index.idx;
 
             unsafe {
-                debug_assert_eq!(*hash_pos, EMPTY_BUCKET);
-                *hash_pos = hash.inspect();
-                overwrite(&mut *key_pos, k);
-                overwrite(&mut *val_pos, v);
+                let mut i = self.safe_all_mut(index.idx);
+                i.put(hash, k, v);
+                // self.internal_put(index, (x as *mut u64,y as *mut K,z as *mut V), hash, k, v)
             }
 
             unsafe {
@@ -437,6 +477,23 @@ use iter::{Iterator, range_step_inclusive};
 
             FullIndex { idx: idx, hash: hash, nocopy: marker::NoCopy }
         }
+        // pub fn internal_put(&mut self, index: EmptyIndex, hash: SafeHash, k: K, v: V) -> FullIndex {
+        //     let idx = index.idx;
+
+        //     unsafe {
+        //         debug_assert_eq!(*hash_pos, EMPTY_BUCKET);
+        //         *hash_pos = hash.inspect();
+        //         move_val_init(&mut *key_pos, k);
+        //         move_val_init(&mut *val_pos, v);
+        //     }
+
+        //     unsafe {
+        //         let len = self.size() + 1;
+        //         self.chunks.set_len(len);
+        //     }
+
+        //     FullIndex { idx: idx, hash: hash, nocopy: marker::NoCopy }
+        // }
 
         /// Removes a key and value from the hashtable.
         ///
@@ -1242,7 +1299,27 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
             self.resize(new_capacity);
         } else if shrink_at <= cap {
             let new_capacity = cap >> 1;
-            self.resize(new_capacity);
+            // self.resize(new_capacity);
+            assert!(num::is_power_of_two(new_capacity));
+            // self.table.chunks.reserve_exact(new_capacity >> 3);
+            unsafe {
+                // set_memory(self.table.chunks.as_mut_ptr().offset((new_capacity >> 3) as int), 0u8, new_capacity >> 3);
+                for i in range(new_capacity, cap) {
+                    match self.table.peek(i) {
+                        Empty(_) => {},
+                        Full(idx) => {
+                            let h = idx.hash().inspect();
+                            // ...
+                            let (_, k, v) = self.table.take(idx);
+                            return Some((h, k, v));
+                        }
+                    }
+                }
+                let tmp = self.table.chunks.len();
+                self.table.chunks.set_len(new_capacity >> 3);
+                self.table.chunks.shrink_to_fit();
+                self.table.chunks.set_len(tmp);
+            }
         }
     }
 
@@ -1277,7 +1354,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                 let full_index = match self.table.internal_peek(probe, *hr) {
                     table::Empty(idx) => {
                         // Finally. A hole!
-                        self.table.internal_put(idx, (hr, kr, vr), old_hash, old_key, old_val);
+                        self.table.put(idx, old_hash, old_key, old_val);
                         return;
                     },
                     table::Full(idx) => idx
