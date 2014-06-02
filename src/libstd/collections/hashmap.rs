@@ -108,15 +108,15 @@ use iter::{Iterator, range_step_inclusive};
     /// please make this use them!
 
     pub type RawChk<K, V> = (
-        (u64, u64, u64, u64, u64, u64, u64, u64),
-        (K, K, K, K, K, K, K, K),
-        (V, V, V, V, V, V, V, V)
+        [u64, ..8],
+        [ K , ..8],
+        [ V , ..8]
     );
 
     pub type RawChunks<K, V> =
-        Vec<((u64, u64, u64, u64, u64, u64, u64, u64),
-             (K, K, K, K, K, K, K, K),
-             (V, V, V, V, V, V, V, V))>;
+        Vec<([u64, ..8],
+             [ K , ..8],
+             [ V , ..8])>;
 
     #[unsafe_no_drop_flag]
     pub struct RawTable<K, V> {
@@ -341,31 +341,34 @@ use iter::{Iterator, range_step_inclusive};
 
         fn ref_idx<'a>(&'a self, idx: int) -> (&'a u64, &'a K, &'a V) {
             #![inline(always)]
+            let idx = idx as uint;
             unsafe {
-                let &(ref hashes, ref keys, ref vals) = &*self.chunks.as_ptr().offset((idx as uint >> 3) as int);
-                (&'a *(hashes.ref0() as *u64).offset(idx & 7),
-                 &'a *(keys.ref0() as * K ).offset(idx & 7),
-                 &'a *(vals.ref0() as * V ).offset(idx & 7))
+                let &(ref hashes, ref keys, ref vals) = &*self.chunks.as_ptr().offset((idx >> 3) as int);
+                (&'a hashes[idx & 7],
+                 &'a keys[idx & 7],
+                 &'a vals[idx & 7])
             }
         }
 
         fn ref_mut_idx<'a>(&'a mut self, idx: int) -> (&'a mut u64, &'a mut K, &'a mut V) {
             #![inline(always)]
+            let idx = idx as uint;
             unsafe {
-                let &(ref mut hashes, ref mut keys, ref mut vals) = &mut *self.chunks.as_mut_ptr().offset((idx as uint >> 3) as int);
-                (&'a mut *(hashes.mut0() as *mut u64).offset(idx & 7),
-                 &'a mut *(keys.mut0()   as *mut  K ).offset(idx & 7),
-                 &'a mut *(vals.mut0()   as *mut  V ).offset(idx & 7))
+                let &(ref mut hashes, ref mut keys, ref mut vals) = &mut *self.chunks.as_mut_ptr().offset((idx >> 3) as int);
+                (&'a mut hashes[idx & 7],
+                 &'a mut keys[idx & 7],
+                 &'a mut vals[idx & 7])
             }
         }
 
         fn ptr_idx<'a>(&'a self, idx: int) -> (*u64, *K, *V) {
             #![inline(always)]
+            let idx = idx as uint;
             unsafe {
-                let &(ref hashes, ref keys, ref vals) = &*self.chunks.as_ptr().offset((idx as uint >> 3) as int);
-                ((hashes.ref0() as *u64).offset(idx & 7),
-                 (keys.ref0() as * K ).offset(idx & 7),
-                 (vals.ref0() as * V ).offset(idx & 7))
+                let &(ref hashes, ref keys, ref vals) = &*self.chunks.as_ptr().offset((idx >> 3) as int);
+                (&'a hashes[idx & 7] as *u64,
+                 &'a keys[idx & 7] as *K,
+                 &'a vals[idx & 7] as *V)
             }
         }
 
@@ -403,54 +406,63 @@ use iter::{Iterator, range_step_inclusive};
 
         /// Gets references to the key and value at a given index.
         pub fn read<'a>(&'a self, index: &FullIndex) -> (&'a K, &'a V) {
-            let idx = index.idx;
+            let idx = index.idx as uint;
 
             unsafe {
-                let &(ref hashes, ref keys, ref vals) = &*self.chunks.as_ptr().offset((idx as uint >> 3) as int);
-                debug_assert!(*(hashes.ref0() as *u64).offset(idx & 7) != EMPTY_BUCKET);
-                (&'a *(keys.ref0() as *K).offset(idx & 7),
-                 &'a *(vals.ref0() as *V).offset(idx & 7))
+                let &(ref hashes, ref keys, ref vals) = &*self.chunks.as_ptr().offset((idx >> 3) as int);
+                debug_assert!(hashes[idx & 7] != EMPTY_BUCKET);
+                // (&'a *(keys.ref0() as *K).offset(idx & 7),
+                 // &'a *(vals.ref0() as *V).offset(idx & 7))
+                (&'a keys[idx & 7],
+                 &'a vals[idx & 7])
+
             }
         }
 
         /// Gets references to the key and value at a given index, with the
         /// value's reference being mutable.
         pub fn read_mut<'a>(&'a mut self, index: &FullIndex) -> (&'a K, &'a mut V) {
-            let idx = index.idx;
+            let idx = index.idx as uint;
 
             unsafe {
-            let &(ref hashes, ref mut keys, ref mut vals) = &mut *self.chunks.as_mut_ptr().offset((idx as uint >> 3) as int);
-                debug_assert!(*(hashes.ref0() as *u64).offset(idx & 7) != EMPTY_BUCKET);
-                (&'a     *(keys.mut0() as *mut K).offset(idx & 7),
-                 &'a mut *(vals.mut0() as *mut V).offset(idx & 7))
+            let &(ref hashes, ref mut keys, ref mut vals) = &mut *self.chunks.as_mut_ptr().offset((idx >> 3) as int);
+                debug_assert!(hashes[idx & 7] != EMPTY_BUCKET);
+                // (&'a     *(keys.mut0() as *mut K).offset(idx & 7),
+                 // &'a mut *(vals.mut0() as *mut V).offset(idx & 7))
+                (&'a keys[idx & 7],
+                 &'a mut vals[idx & 7])
             }
         }
 
         /// Read everything, mutably.
         pub fn read_all_mut<'a>(&'a mut self, index: &FullIndex)
             -> (&'a mut SafeHash, &'a mut K, &'a mut V) {
-            let idx = index.idx;
+            let idx = index.idx as uint;
 
             unsafe {
-                let &(ref mut hashes, ref mut keys, ref mut vals) = &mut *self.chunks.as_mut_ptr().offset((idx as uint >> 3) as int);
-                debug_assert!(*(hashes.ref0() as *u64).offset(idx & 7) != EMPTY_BUCKET);
-                (transmute((hashes.mut0() as *mut u64).offset(idx & 7)),
-                 &'a mut *(keys.mut0() as *mut K).offset(idx & 7),
-                 &'a mut *(vals.mut0() as *mut V).offset(idx & 7))
+                let &(ref mut hashes, ref mut keys, ref mut vals) = &mut *self.chunks.as_mut_ptr().offset((idx >> 3) as int);
+                debug_assert!(hashes[idx & 7] != EMPTY_BUCKET);
+                (transmute(&hashes[idx & 7]),
+                 &'a mut keys[idx & 7],
+                 &'a mut vals[idx & 7])
             }
+        }
+
+        unsafe fn get_chunk(&mut self, idx: uint) -> &mut RawChk<K, V> {
+            &mut *self.chunks.as_mut_ptr().offset((idx >> 3) as int)
         }
 
         /// Read everything, mutably.
         pub fn safe_all_mut<'a>(&'a mut self, idx: int) -> MutSafeIdx<'a, K, V> {
             // makes insert and new_insert_drop slow!
-            let &(ref mut hshs, ref mut keys, ref mut vals) = unsafe {
-                &mut *self.chunks.as_mut_ptr().offset((idx as uint >> 3) as int)
-            };
+            let idx = idx as uint;
+            let &(ref mut hshs, ref mut keys, ref mut vals) = unsafe { self.get_chunk(idx) };
 
-            debug_assert!(*ary_offset(hshs, idx) != EMPTY_BUCKET);
-            MutSafeIdx { h: unsafe { transmute(ary_offset(hshs, idx)) },
-                k: &'a mut *ary_offset(keys, idx),
-                v: &'a mut *ary_offset(vals, idx)
+            debug_assert!(hshs[idx & 7] != EMPTY_BUCKET);
+            MutSafeIdx { 
+                h: &'a mut hshs[idx & 7],
+                k: &'a mut keys[idx & 7],
+                v: &'a mut vals[idx & 7]
             }
         }
 
@@ -594,6 +606,11 @@ use iter::{Iterator, range_step_inclusive};
         assert_eq!(size_of::<SafeHash>(), size_of::<u64>())
     }
 
+    pub struct MutChunks<'a, K, V> {
+        table: &'a mut RawTable<K, V>,
+        ptr: *mut RawChk<K, V>
+    }
+
     /// Iterator over shared references to entries in a table.
     pub struct Entries<'a, K, V> {
         table: &'a RawTable<K, V>,
@@ -699,18 +716,18 @@ use iter::{Iterator, range_step_inclusive};
                     match self.peek(i) {
                         Empty(_)  => {
                             let &(ref mut hashes, _, _) = new_ht.chunks.get_mut(i >> 3);
-                            *(hashes.mut0() as *mut u64).offset(i as int & 7) = EMPTY_BUCKET;
+                            hashes[i & 7] = EMPTY_BUCKET;
                         },
                         Full(idx) => {
                             let hash = idx.hash().inspect();
                             let (k, v) = self.read(&idx);
 
                             let &(ref mut hashes, ref mut keys, ref mut vals) = new_ht.chunks.get_mut(i >> 3);
-                            *(hashes.mut0() as *mut u64).offset(i as int) = hash;
+                            hashes[i] = hash;
                 // let keys = (new_ht.hashes as *mut u8).offset(new_ht.keys() as int) as *mut K;
                 // let vals = (new_ht.hashes as *mut u8).offset(new_ht.vals() as int) as *mut V;
-                            overwrite(&mut *(keys.mut0() as *mut K).offset(i as int & 7), (*k).clone());
-                            overwrite(&mut *(vals.mut0() as *mut V).offset(i as int & 7), (*v).clone());
+                            overwrite(&mut keys[i & 7], (*k).clone());
+                            overwrite(&mut vals[i & 7], (*v).clone());
                         }
                     }
                 }
@@ -1306,12 +1323,13 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                 // set_memory(self.table.chunks.as_mut_ptr().offset((new_capacity >> 3) as int), 0u8, new_capacity >> 3);
                 for i in range(new_capacity, cap) {
                     match self.table.peek(i) {
-                        Empty(_) => {},
-                        Full(idx) => {
+                        table::Empty(_) => {},
+                        table::Full(idx) => {
                             let h = idx.hash().inspect();
                             // ...
                             let (_, k, v) = self.table.take(idx);
-                            return Some((h, k, v));
+                            return;
+                            // return Some((h, k, v));
                         }
                     }
                 }
