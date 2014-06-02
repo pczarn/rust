@@ -49,7 +49,9 @@ mod table {
 use tuple::Tuple8;
 use container::Container;
 use vec::Vec;
-use iter::{Iterator, range_step_inclusive};
+use iter::{Iterator, range_step_inclusive, range_step};
+use iter::{RangeStepInclusive, Zip, Skip, Cycle, Chain, RangeStep};
+use std::slice::MutItems;
     static EMPTY_BUCKET: u64 = 0u64;
 
     /// The raw hashtable, providing safe-ish access to the unzipped and highly
@@ -107,16 +109,28 @@ use iter::{Iterator, range_step_inclusive};
     /// this and going "what? of course there are debug-only asserts!", then
     /// please make this use them!
 
+    // A fixed length tri-vec.
+    // An array length of 8 (= 2^3) is enough to ensure good cache locality
+    // in hashmaps for which `size_of<K> + size_of<V>` is a multiple of 8,
+    // on systems with cache line of 64 bytes of smaller.
+    static LOG2_CHUNK: uint = 3;
+    pub static CHUNK: uint = 1 << LOG2_CHUNK; // 8
+    static CHUNK_MASK: uint = CHUNK - 1;
+
     pub type RawChk<K, V> = (
-        [u64, ..8],
-        [ K , ..8],
-        [ V , ..8]
+        [u64, ..CHUNK],
+        [ K , ..CHUNK],
+        [ V , ..CHUNK]
     );
 
     pub type RawChunks<K, V> =
-        Vec<([u64, ..8],
-             [ K , ..8],
-             [ V , ..8])>;
+        Vec<([u64, ..CHUNK],
+             [ K , ..CHUNK],
+             [ V , ..CHUNK])>;
+
+    pub struct TriVec<K, V>(
+        pub RawChk<K, V>
+    );
 
     #[unsafe_no_drop_flag]
     pub struct RawTable<K, V> {
@@ -133,9 +147,9 @@ use iter::{Iterator, range_step_inclusive};
     /// Represents an index into a `RawTable` with a key, value, and hash
     /// in it.
     pub struct FullIndex {
-        idx:    int,
-        hash:   SafeHash,
-        nocopy: marker::NoCopy,
+        pub idx:    int,
+        pub hash:   SafeHash,
+        pub nocopy: marker::NoCopy,
     }
 
     impl FullIndex {
@@ -165,7 +179,7 @@ use iter::{Iterator, range_step_inclusive};
     // }
 
     struct MutSafeIdx<'a, K, V> {
-        h: &'a mut u64,
+        pub h: &'a mut u64,
         k: &'a mut K,
         v: &'a mut V,
     }
@@ -182,7 +196,7 @@ use iter::{Iterator, range_step_inclusive};
     /// buckets.
     #[deriving(PartialEq)]
     pub struct SafeHash {
-        hash: u64,
+        pub hash: u64,
     }
 
     impl<'a, K, V> MutSafeIdx<'a, K, V> {
@@ -214,7 +228,7 @@ use iter::{Iterator, range_step_inclusive};
         }
     }
 
-    fn round_up_to_next(unrounded: uint, target_alignment: uint) -> uint {
+    pub fn round_up_to_next(unrounded: uint, target_alignment: uint) -> uint {
         assert!(is_power_of_two(target_alignment));
         (unrounded + target_alignment - 1) & !(target_alignment - 1)
     }
@@ -255,22 +269,6 @@ use iter::{Iterator, range_step_inclusive};
         assert_eq!(calculate_offsets(128, 8, 15, 1, 4, 4 ), (8, 0, 128, 144, 148));
         assert_eq!(calculate_offsets(3,   1, 2,  1, 1, 1 ), (1, 0, 3,   5,   6));
         assert_eq!(calculate_offsets(6,   2, 12, 4, 24, 8), (8, 0, 8,   24,  48));
-    }
-
-    fn ary_offset<'a, T>(ary: &'a mut (T,T,T,T,T,T,T,T,), idx: int) -> &'a mut T {
-        #![inline(always)]
-        use std::mem::uninitialized;
-        match idx as uint & 7 {
-            0 => ary.mut0(),
-            1 => ary.mut1(),
-            2 => ary.mut2(),
-            3 => ary.mut3(),
-            4 => ary.mut4(),
-            5 => ary.mut5(),
-            6 => ary.mut6(),
-            7 => ary.mut7(),
-            _ => unsafe { uninitialized() }
-        }
     }
 
     impl<K, V> RawTable<K, V> {
@@ -344,7 +342,7 @@ use iter::{Iterator, range_step_inclusive};
             let idx = idx as uint;
             unsafe {
                 let &(ref hashes, ref keys, ref vals) = &*self.chunks.as_ptr().offset((idx >> 3) as int);
-                (&'a hashes[idx & 7],
+                (&'a hashes[idx & 7], // CHUNK_MASK
                  &'a keys[idx & 7],
                  &'a vals[idx & 7])
             }
@@ -453,12 +451,15 @@ use iter::{Iterator, range_step_inclusive};
         }
 
         /// Read everything, mutably.
-        pub fn safe_all_mut<'a>(&'a mut self, idx: int) -> MutSafeIdx<'a, K, V> {
+        pub fn safe_all_mut<'a>(&'a mut self, idx: int, empty: bool) -> MutSafeIdx<'a, K, V> {
             // makes insert and new_insert_drop slow!
             let idx = idx as uint;
             let &(ref mut hshs, ref mut keys, ref mut vals) = unsafe { self.get_chunk(idx) };
 
-            debug_assert!(hshs[idx & 7] != EMPTY_BUCKET);
+            if empty {
+                // put into empty
+                debug_assert_eq!(hshs[idx & 7], EMPTY_BUCKET);
+            }
             MutSafeIdx { 
                 h: &'a mut hshs[idx & 7],
                 k: &'a mut keys[idx & 7],
@@ -477,7 +478,7 @@ use iter::{Iterator, range_step_inclusive};
             let idx = index.idx;
 
             unsafe {
-                let mut i = self.safe_all_mut(index.idx);
+                let mut i = self.safe_all_mut(index.idx, true);
                 i.put(hash, k, v);
                 // self.internal_put(index, (x as *mut u64,y as *mut K,z as *mut V), hash, k, v)
             }
@@ -570,7 +571,7 @@ use iter::{Iterator, range_step_inclusive};
 
         /// The hashtable's capacity, similar to a vector's.
         pub fn capacity(&self) -> uint {
-            self.chunks.capacity() << 3
+            self.chunks.capacity() << LOG2_CHUNK
         }
 
         /// The number of elements ever `put` in the hashtable, minus the number
@@ -590,6 +591,78 @@ use iter::{Iterator, range_step_inclusive};
         pub fn move_iter(self) -> MoveEntries<K, V> {
             MoveEntries { table: self, idx: 0 }
         }
+
+        pub fn chunk_iter<'a>(&'a mut self, hsh: &SafeHash)//, start: uint, stop: uint)
+        // -> Zip<RangeStepInclusive<uint>,
+               // Skip<Cycle<MutItems<'a, RawChk<K, V>>>>> {
+        // -> Zip<RangeStepInclusive<uint>,
+        //        Chain<MutItems<'a, RawChk<K, V>>,
+        //              MutItems<'a, RawChk<K, V>>>
+        //     > {
+        // -> Chain<MutItems<'a, RawChk<K, V>>,
+        //          MutItems<'a, RawChk<K, V>>> {
+        -> Zip<Skip<Cycle<RangeStep<uint>>>,
+            Chain<MutItems<'a, RawChk<K, V>>,
+                  MutItems<'a, RawChk<K, V>>>
+            > {
+            let cap = self.capacity();
+            let hash_mask = self.chunks.capacity() - 1;
+            let num_skipped = ((hsh.inspect() as uint) >> 3) & hash_mask;
+            // let (skipped, first) = self.chunks.mut_split_at(num_skipped);
+            let tmp = self.chunks.len();
+            unsafe { self.chunks.set_len(hash_mask + 1); }
+            let t: &mut Vec<RawChk<K,V>> = unsafe { &mut(*(self as *mut RawTable<K, V>)).chunks };
+            let (skipped, first) = self.chunks.mut_split_at(num_skipped);
+            unsafe {
+                // let t: &mut Vec<()> = transmute(self);
+                t.set_len(tmp);
+            }
+            // let (last, _) = skipped.mut_split_at((num_skipped +) % self.chunks.capacity());
+            // let items = self.chunks.mut_iter().cycle().skip(skipped);
+            let items = first.mut_iter().chain(skipped.mut_iter());
+            range_step(0u, cap, 8).cycle().skip(num_skipped).zip(items)
+            // range_step_inclusive(start >> LOG2_CHUNK, round_up_to_next(stop, 8), 8).zip(items)
+        }
+    }
+
+    // impl<K, V> TriVec<K, V> {
+        pub fn mut_iter<'a, K, V>(this: &'a mut RawChk<K, V>) -> MutTriVecEntries<'a, K, V> {
+            let &(ref mut hsh, ref mut key, ref mut val) = this;
+            let ptr = hsh as *mut u64;
+            MutTriVecEntries {
+                ptr: ptr,
+                end: unsafe { ptr.offset(CHUNK as int) },
+                keys: key as *mut K,
+                vals: val as *mut V,
+                marker: marker::ContravariantLifetime,
+                marker2: marker::NoCopy,
+            }
+        }
+    // }
+
+    pub struct MutTriVecEntries<'a, K, V> {
+        ptr: *mut u64,
+        end: *mut u64,
+        keys: *mut K,
+        vals: *mut V,
+        marker: marker::ContravariantLifetime<'a>,
+        marker2: marker::NoCopy
+    }
+
+    impl<'a, K, V> Iterator<(&'a mut u64, &'a mut K, &'a mut V)> for MutTriVecEntries<'a, K, V> {
+        fn next(&mut self) -> Option<(&'a mut u64, &'a mut K, &'a mut V)> {
+            unsafe {
+                if self.ptr == self.end {
+                    None
+                } else {
+                    let tmp = (self.ptr, self.keys, self.vals);
+                    self.ptr = self.ptr.offset(1);
+                    self.keys = self.keys.offset(1);
+                    self.vals = self.vals.offset(1);
+                    Some(transmute(tmp))
+                }
+            }
+        }
     }
 
     // `read_all_mut` casts a `*u64` to a `*SafeHash`. Since we statically
@@ -606,10 +679,42 @@ use iter::{Iterator, range_step_inclusive};
         assert_eq!(size_of::<SafeHash>(), size_of::<u64>())
     }
 
-    pub struct MutChunks<'a, K, V> {
-        table: &'a mut RawTable<K, V>,
-        ptr: *mut RawChk<K, V>
-    }
+    // pub struct MutChunks<'a, K, V> {
+    //     // table: &'a mut RawTable<K, V>,
+    //     // ptr: *mut RawChk<K, V>
+    //     dibs: Zip<RangeStepInclusive<uint>,
+
+    //     chunks: Cycle<MutItems<'a, RawChk<K, V>>>,
+    // }
+
+    // impl<'a, K, V> Iterator<(uint, &RawChk<K, V>)> for MutChunks<'a, K, V> {
+    //     fn next(&mut self) -> Option<(uint, &RawChk<K, V>)> {
+    //         match (self.dibs.next(), self.chunks.next()) {
+    //             (Some(dib), Some(chunk)) => {
+    //                 (dib, chunk)
+    //             }
+    //         }
+    //         // while self.idx < self.table.capacity() {
+    //         //     let i = self.idx;
+    //         //     self.idx += 1;
+
+    //         //     match self.table.peek(i) {
+    //         //         Empty(_)  => {},
+    //         //         Full(idx) => {
+    //         //             self.elems_seen += 1;
+    //         //             return Some(self.table.read(&idx));
+    //         //         }
+    //         //     }
+    //         // }
+
+    //         // None
+    //     }
+
+    //     fn size_hint(&self) -> (uint, Option<uint>) {
+    //         let size = self.table.size() - self.elems_seen;
+    //         (size, Some(size))
+    //     }
+    // }
 
     /// Iterator over shared references to entries in a table.
     pub struct Entries<'a, K, V> {
@@ -1168,43 +1273,218 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
     }
 
     fn swap(&mut self, k: K, v: V) -> Option<V> {
+        use std::intrinsics::move_val_init;
+        use std::mem::transmute;
         let hash = self.make_hash(&k);
         let potential_new_size = self.table.size() + 1;
         self.make_some_room(potential_new_size);
 
-        for dib in range_inclusive(0u, self.table.size()) {
-            let probe = self.probe(&hash, dib);
-
-            let idx = match self.table.peek(probe) {
-                table::Empty(idx) => {
-                    // Found a hole!
-                    self.table.put(idx, hash, k, v);
-                    return None;
-                },
-                table::Full(idx) => idx
-            };
-
-            if idx.hash() == hash {
-                let (bucket_k, bucket_v) = self.table.read_mut(&idx);
-                if k == *bucket_k {
-                    // Found an existing value.
-                    return Some(replace(bucket_v, v));
+        let unsfptr = unsafe{self as *mut HashMap<K, V, H, R>};
+        let size = self.table.size();
+        let cap = self.table.capacity();
+        let hash_mask = self.table.capacity() - 1;
+        let robin = {
+        let mut spot = None;
+        let mut free_slot = None;
+        let mut result = None;
+        let mut to_skip = hash.inspect() as uint & 7;
+        // let chunks = self.table.chunk_iter(&hash);
+        // table::round_up_to_next(size, table::CHUNK)
+        let found = range_step_inclusive(0u, size, table::CHUNK).zip(self.table.chunk_iter(&hash)).any(|(dib, (idx, chunk_ref))| {
+            // let chunk_ref = *chunk_ref;
+            // println!("dib {} {}", dib, idx);
+            let mut iter = table::mut_iter(chunk_ref).enumerate();
+            let something = iter.skip(to_skip).any(|(o, (hsh, key, val))| {
+                unsafe{
+                let muti = (*unsfptr).table.safe_all_mut((idx + o) as int, false);
+                assert_eq!(muti.h as *mut u64, hsh as *mut u64);
                 }
-            }
+                // println!("{} {}", o, hsh);
+                match hsh {
+                    &0u64 => {
+                        // *hsh = hash.inspect();
+                        // move_val_init(key, k);
+                        // move_val_init(val, v);
+                        free_slot = Some((hsh, key, val));
+                        true
+                    }
+                    &full_hash => {
+                        if full_hash == hash.inspect() && k == *key {
+                            // result = Some(replace(val, v));
+                            result = Some(val);
+                            true
+                        } else {
+                            // let first_probe_index = self.probe(full_hash, 0);
+                            let first_probe_index = (full_hash as uint) & hash_mask;
+                            let raw_index = idx + o;
 
-            let probe_dib = self.bucket_distance(&idx);
-
-            if probe_dib < dib {
-                // Found a luckier bucket. This implies that the key does not
-                // already exist in the hashtable. Just do a robin hood
-                // insertion, then.
-                self.robin_hood(idx, probe_dib, hash, k, v);
-                return None;
+                            let probe_dib = if first_probe_index <= raw_index {
+                                 // probe just went forward
+                                raw_index - first_probe_index
+                            } else {
+                                // probe wrapped around the hashtable
+                                raw_index + (cap - first_probe_index)
+                                // raw_index + (self.table.capacity() - first_probe_index)
+                            };
+                            // let probe_dib =
+                            if probe_dib < dib + o {
+                                spot = Some((raw_index, full_hash, probe_dib));
+                                true
+                            } else {
+                                false
+                            }
+                        }
+                    }
+                }
+            });
+            to_skip = 0;
+            something
+        });
+        match (found, spot, free_slot, result) {
+            (true, Some(t), _, _) => (Some((t, k, v)), 0),
+            (true, _, Some((hsh, key, val)), _) => {
+                *hsh = hash.inspect();
+                unsafe {
+                    move_val_init(key, k);
+                    move_val_init(val, v);
+                }
+                (None, 1)
             }
+            (true, _, _, Some(val)) => {
+                return Some(replace(val, v));
+            }
+            _ => (None, 0)
         }
+        };
+        match robin {
+            (None, 1) => unsafe {
+                let len = self.table.size() + 1;
+                self.table.chunks.set_len(len);
+                return None;
+            },
+            (None, 0) => {}
+            (Some(((idx, full_hash, probe_dib), k, v)), _) => unsafe {
+                use std::kinds::marker::NoCopy;
+                self.robin_hood(table::FullIndex {idx:idx as int, hash:table::SafeHash{hash:full_hash},nocopy:NoCopy}, probe_dib, hash, k, v);
+                return None;
+            },
+            _ => {}
+        }
+            // for (o, (hsh, key, val)) in iter {
+            //     match hsh {
+            //         &0u64 => {
+            //             // self.table.put(dib + o, hash, k, v);
+            //             // debug_assert_eq!(*self.h, EMPTY_BUCKET);
+            //             // *self.h = hash.inspect();
+            //             // unsafe {
+            //             //     move_val_init(self.k, key);
+            //             //     move_val_init(self.v, val);
+            //             // }
+            //             // let idx = dib + o; // TODO real idx
 
+            //             unsafe {
+            //                 use std::intrinsics::move_val_init;
+            //                 // let mut i = self.safe_all_mut(index.idx);
+            //                 // i.put(hash, k, v);
+            //                 // debug_assert_eq!(*hsh, EMPTY_BUCKET);
+            //                 *hsh = hash.inspect();
+            //                 move_val_init(key, k);
+            //                 move_val_init(val, v);
+            //                 // self.internal_put(index, (x as *mut u64,y as *mut K,z as *mut V), hash, k, v)
+            //             }
+
+            //             break 'outer;
+            //             // unsafe {
+            //             //     let len = self.table.size() + 1;
+            //             //     self.table.chunks.set_len(len);
+            //             // }
+
+            //             // FullIndex { idx: idx, hash: hash, nocopy: marker::NoCopy }
+            //             // return None;
+            //         }
+            //         &full_hash => {
+            //             use std::mem::transmute;
+            //             if full_hash == hash.inspect() {
+            //                 if k == *key {
+            //                     return Some(replace(val, v));
+            //                 }
+            //             }
+
+            //             // let first_probe_index = self.probe(full_hash, 0);
+            //             let first_probe_index = (full_hash as uint) & hash_mask;
+            //             let raw_index = idx + o;
+
+            //             let probe_dib = if first_probe_index <= raw_index {
+            //                  // probe just went forward
+            //                 raw_index - first_probe_index
+            //             } else {
+            //                 // probe wrapped around the hashtable
+            //                 raw_index + (hash_mask + 1 - first_probe_index)
+            //                 // raw_index + (self.table.capacity() - first_probe_index)
+            //             };
+            //             // let probe_dib =
+            //             if probe_dib < dib {
+            //                 unsafe {
+            //                     (&mut *(self as *mut HashMap<K, V, H, R>)).robin_hood(transmute((idx + o, full_hash)), probe_dib, hash, k, v);
+            //                 }
+            //                 return None;
+            //             }
+            //         }
+            //     }
+            // }
+            // let idx = match self.table.peek(probe) {
+            //     table::Empty(idx) => {
+            //         // Found a hole!
+            //         self.table.put(idx, hash, k, v);
+            //         return None;
+            //     },
+            //     table::Full(idx) => idx
+            // };
+
+            // if idx.hash() == hash {
+            //     let (bucket_k, bucket_v) = self.table.read_mut(&idx);
+            //     if k == *bucket_k {
+            //         // Found an existing value.
+            //         return Some(replace(bucket_v, v));
+            //     }
+            // }
+
+            // let probe_dib = self.bucket_distance(&idx);
+    // fn bucket_distance(&self, index_of_elem: &table::FullIndex) -> uint {
+    //     // where the hash of the element that happens to reside at
+    //     // `index_of_elem` tried to place itself first.
+    //     let first_probe_index = self.probe(&index_of_elem.hash(), 0);
+
+    //     let raw_index = index_of_elem.raw_index();
+
+    //     if first_probe_index <= raw_index {
+    //          // probe just went forward
+    //         raw_index - first_probe_index
+    //     } else {
+    //         // probe wrapped around the hashtable
+    //         raw_index + (self.table.capacity() - first_probe_index)
+    //     }
+    // }
+
+            // if probe_dib < dib {
+            //     // Found a luckier bucket. This implies that the key does not
+            //     // already exist in the hashtable. Just do a robin hood
+            //     // insertion, then.
+            //     self.robin_hood(idx, probe_dib, hash, k, v);
+            //     return None;
+        // return None;
+
+    // }
+
+    // fn swap(&mut self, k: K, v: V) -> Option<V> {
+    //     match self.swap_wrapped(k, v) {
+    //         None => {
+
+    //         }
+    //     }
         // We really shouldn't be here.
         fail!("Internal HashMap error: Out of space.");
+        // return None;
     }
 
     fn pop(&mut self, k: &K) -> Option<V> {
@@ -1222,7 +1502,6 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
 
         self.pop_internal(starting_index)
     }
-
 }
 
 impl<K: Hash + Eq, V> HashMap<K, V, sip::SipHasher> {
@@ -1396,6 +1675,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                 probe = self.probe_next(probe);
             }
 
+            println!("{} {} {}", index.raw_index(), dib_param, hash.inspect());
             fail!("HashMap fatal error: 100% load factor?");
         }}
     }
@@ -2031,7 +2311,7 @@ mod test_map {
 
                 for j in range_inclusive(1, i) {
                     let r = m.find(&j);
-                    assert_eq!(r, Some(&j));
+                    assert_eq!((r, i), (Some(&j), i));
                 }
 
                 for j in range_inclusive(i+1, 1000) {
