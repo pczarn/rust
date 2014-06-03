@@ -612,7 +612,7 @@ use std::slice::MutItems;
                       MutItems<'a, RawChk<K, V>>>,
                 MutTriVecEntries<'a, K, V>
             >,
-            Cycle<Range<uint>>
+            Skip<Cycle<Range<uint>>>
         >> {
             let cap = self.capacity();
             let hash_mask = self.chunks.capacity() - 1;
@@ -633,7 +633,7 @@ use std::slice::MutItems;
             // range_step(0u, cap, 8).cycle().skip(num_skipped).zip(items)
             items.flat_map(|chunk_ref| {
                 mut_iter(chunk_ref)//.zip(range(idx, idx+8))
-            }).zip(range(0u, cap).cycle()).skip(to_skip)
+            }).zip(range(0u, cap).cycle().skip(num_skipped << LOG2_CHUNK)).skip(to_skip)
             // range_step_inclusive(start >> LOG2_CHUNK, round_up_to_next(stop, 8), 8).zip(items)
         }
     }
@@ -1134,15 +1134,14 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                 table::Full(idx) => idx
             };
 
-
-            let (k, _) = self.table.read(&idx);
-            println!("{:?}", k);
             // We can finish the search early if we hit any bucket
             // with a lower distance to initial bucket than we've probed.
             if self.bucket_distance(&idx) < num_probes { return None }
 
             // If the hash doesn't match, it can't be this one..
             if *hash != idx.hash() { continue }
+
+            let (k, _) = self.table.read(&idx);
 
             // If the key doesn't match, it can't be this one..
             if !is_match(k) { continue }
@@ -1703,28 +1702,29 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
             self.resize(new_capacity);
         } else if shrink_at <= cap {
             let new_capacity = cap >> 1;
-            // self.resize(new_capacity);
-            assert!(num::is_power_of_two(new_capacity));
-            // self.table.chunks.reserve_exact(new_capacity >> 3);
-            unsafe {
-                // set_memory(self.table.chunks.as_mut_ptr().offset((new_capacity >> 3) as int), 0u8, new_capacity >> 3);
-                for i in range(new_capacity, cap) {
-                    match self.table.peek(i) {
-                        table::Empty(_) => {},
-                        table::Full(idx) => {
-                            let h = idx.hash().inspect();
-                            // ...
-                            let (_, k, v) = self.table.take(idx);
-                            return;
-                            // return Some((h, k, v));
-                        }
-                    }
-                }
-                let tmp = self.table.chunks.len();
-                self.table.chunks.set_len(new_capacity >> 3);
-                self.table.chunks.shrink_to_fit();
-                self.table.chunks.set_len(tmp);
-            }
+            self.resize(new_capacity);
+            // TODO faster shrink!
+            // assert!(num::is_power_of_two(new_capacity));
+            // // self.table.chunks.reserve_exact(new_capacity >> 3);
+            // unsafe {
+            //     // set_memory(self.table.chunks.as_mut_ptr().offset((new_capacity >> 3) as int), 0u8, new_capacity >> 3);
+            //     for i in range(new_capacity, cap) {
+            //         match self.table.peek(i) {
+            //             table::Empty(_) => {},
+            //             table::Full(idx) => {
+            //                 let h = idx.hash().inspect();
+            //                 // ...
+            //                 let (_, k, v) = self.table.take(idx);
+            //                 return;
+            //                 // return Some((h, k, v));
+            //             }
+            //         }
+            //     }
+            //     let tmp = self.table.chunks.len();
+            //     self.table.chunks.set_len(new_capacity >> 3);
+            //     self.table.chunks.shrink_to_fit();
+            //     self.table.chunks.set_len(tmp);
+            // }
         }
     }
 
