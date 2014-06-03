@@ -17,8 +17,8 @@ use default::Default;
 use fmt::Show;
 use fmt;
 use hash::{Hash, Hasher, sip};
-use iter::{Iterator, FilterMap, Chain, Repeat, Zip, Extendable};
-use iter::{range, range_inclusive, FromIterator};
+use iter::{Iterator, FromIterator, FilterMap, Chain, Repeat, Zip, Extendable};
+use iter::{range, range_inclusive, range_step_inclusive, FromIterator};
 use iter;
 use mem::replace;
 use num;
@@ -50,7 +50,7 @@ use tuple::Tuple8;
 use container::Container;
 use vec::Vec;
 use iter::{Iterator, range_step_inclusive, range_step};
-use iter::{RangeStepInclusive, Zip, Skip, Cycle, Chain, RangeStep};
+use iter::{RangeStepInclusive, Zip, Skip, Cycle, Chain, RangeStep, Range, FlatMap};
 use std::slice::MutItems;
     static EMPTY_BUCKET: u64 = 0u64;
 
@@ -601,12 +601,22 @@ use std::slice::MutItems;
         //     > {
         // -> Chain<MutItems<'a, RawChk<K, V>>,
         //          MutItems<'a, RawChk<K, V>>> {
-        -> Zip<Skip<Cycle<RangeStep<uint>>>,
-            Chain<MutItems<'a, RawChk<K, V>>,
-                  MutItems<'a, RawChk<K, V>>>
-            > {
+        // -> Zip<Skip<Cycle<RangeStep<uint>>>,
+        //     Chain<MutItems<'a, RawChk<K, V>>,
+        //           MutItems<'a, RawChk<K, V>>>
+        -> Skip<Zip<
+            FlatMap<
+                'a,
+                &'a mut RawChk<K, V>,
+                Chain<MutItems<'a, RawChk<K, V>>,
+                      MutItems<'a, RawChk<K, V>>>,
+                MutTriVecEntries<'a, K, V>
+            >,
+            Cycle<Range<uint>>
+        >> {
             let cap = self.capacity();
             let hash_mask = self.chunks.capacity() - 1;
+            let to_skip = hsh.inspect() as uint & CHUNK_MASK;
             let num_skipped = ((hsh.inspect() as uint) >> 3) & hash_mask;
             // let (skipped, first) = self.chunks.mut_split_at(num_skipped);
             let tmp = self.chunks.len();
@@ -620,7 +630,10 @@ use std::slice::MutItems;
             // let (last, _) = skipped.mut_split_at((num_skipped +) % self.chunks.capacity());
             // let items = self.chunks.mut_iter().cycle().skip(skipped);
             let items = first.mut_iter().chain(skipped.mut_iter());
-            range_step(0u, cap, 8).cycle().skip(num_skipped).zip(items)
+            // range_step(0u, cap, 8).cycle().skip(num_skipped).zip(items)
+            items.flat_map(|chunk_ref| {
+                mut_iter(chunk_ref)//.zip(range(idx, idx+8))
+            }).zip(range(0u, cap).cycle()).skip(to_skip)
             // range_step_inclusive(start >> LOG2_CHUNK, round_up_to_next(stop, 8), 8).zip(items)
         }
     }
@@ -1281,6 +1294,13 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> Map<K, V> for HashMap<K, V, H> {
     }
 }
 
+enum MapResult<K, V> {
+    InsertEntry(*mut u64, *mut K, *mut V),
+    InsertVal(*mut V),
+    RobinHood(uint, u64, uint),
+    NoResult
+}
+
 impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> {
     fn find_mut<'a>(&'a mut self, k: &K) -> Option<&'a mut V> {
         match self.search(k) {
@@ -1302,18 +1322,16 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
         // let unsfptr = unsafe{self as *mut HashMap<K, V, H, R>};
         let size = self.table.size();
         let cap = self.table.capacity();
-        let hash_mask = self.table.capacity() - 1;
+        // let hash_mask = self.table.capacity() - 1;
         // let mut spot = None;
         // let mut free_slot = None;
         // let mut result = None;
-        let mut to_skip = hash.inspect() as uint & 7;
+        // let mut to_skip = hash.inspect() as uint & 7;
         // let mut i = 0;
         // let chunks = self.table.chunk_iter(&hash);
         // table::round_up_to_next(size, table::CHUNK)
         let f = range_inclusive(0u, size).zip(
-                self.table.chunk_iter(&hash).flat_map(|(idx, chunk_ref)| {
-                    table::mut_iter(chunk_ref).zip(range(idx, idx+8))
-                }).skip(to_skip)
+            self.table.chunk_iter(&hash)
         ).map(|(dib, ((hsh, key, val), idx))| {
             // let chunk_ref = *chunk_ref;
             // println!("dib {} {}", dib, idx);
@@ -1329,12 +1347,14 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
                         // *hsh = hash.inspect();
                         // move_val_init(key, k);
                         // move_val_init(val, v);
-                        Some((Some((hsh as *mut u64, key as *mut K)), Some(val as *mut V), None))
+                        // Some((Some((hsh as *mut u64, key as *mut K)), Some(val as *mut V), None))
+                        Some(InsertEntry(hsh as *mut u64, key as *mut K, val as *mut V))
                     }
                     &full_hash => {
                         if full_hash == hash.inspect() && k == *key {
                             // result = Some(replace(val, v));
-                            Some((None, Some(val as *mut V), None))
+                            // Some((None, Some(val as *mut V), None))
+                            Some(InsertVal(val as *mut V))
                         } else {
                             // let first_probe_index = self.probe(full_hash, 0);
                             // let first_probe_index = (full_hash as uint) & hash_mask;
@@ -1352,7 +1372,8 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
                             let raw_index = idx;
                             let probe_dib = bucket_dib(raw_index, full_hash, cap);
                             if probe_dib < dib {
-                                Some((None, None, Some((raw_index, full_hash, probe_dib))))
+                                Some(RobinHood(raw_index, full_hash, probe_dib))
+                                // Some((None, None, Some(())))
                             } else {
                                 None
                                 // if i <= size {
@@ -1388,10 +1409,10 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
         // }
         // (found, spot, free_slot, result)
         match f {
-            Some((None, Some(val), _)) => {
+            Some(InsertVal(val)) => {
                 return Some(replace(unsafe { &mut *val }, v));
             }
-            Some((Some((hsh, key)), Some(val), _)) => {
+            Some(InsertEntry(hsh, key, val)) => {
                 unsafe {
                     *hsh = hash.inspect();
                     move_val_init(&mut *key, k);
@@ -1402,7 +1423,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
                 }
                 // Some(None)
             }
-            Some((None, None, Some((idx, full_hash, probe_dib)))) => {
+            Some(RobinHood(idx, full_hash, probe_dib)) => {
                 // Some(Some((idx, full_hash, probe_dib, k, v)))
                 use std::kinds::marker::NoCopy;
                 self.robin_hood(table::FullIndex {idx:idx as int, hash:table::SafeHash{hash:full_hash},nocopy:NoCopy}, probe_dib, hash, k, v);
