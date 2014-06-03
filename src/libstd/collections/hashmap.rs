@@ -113,9 +113,9 @@ use std::slice::MutItems;
     // An array length of 8 (= 2^3) is enough to ensure good cache locality
     // in hashmaps for which `size_of<K> + size_of<V>` is a multiple of 8,
     // on systems with cache line of 64 bytes of smaller.
-    static LOG2_CHUNK: uint = 3;
+    pub static LOG2_CHUNK: uint = 3;
     pub static CHUNK: uint = 1 << LOG2_CHUNK; // 8
-    static CHUNK_MASK: uint = CHUNK - 1;
+    pub static CHUNK_MASK: uint = CHUNK - 1;
 
     pub type RawChk<K, V> = (
         [u64, ..CHUNK],
@@ -136,6 +136,7 @@ use std::slice::MutItems;
     pub struct RawTable<K, V> {
         // rm pub
         pub chunks: RawChunks<K, V>,
+        pub size: uint
     }
 
     /// Represents an index into a `RawTable` with no key or value in it.
@@ -276,13 +277,16 @@ use std::slice::MutItems;
         /// Does not initialize the buckets. The caller should ensure they,
         /// at the very least, set every hash to EMPTY_BUCKET.
         unsafe fn new_uninitialized(vec_capacity: uint) -> RawTable<K, V> {
-            let v: RawChunks<K, V> = Vec::with_capacity(vec_capacity);
+            let mut v: RawChunks<K, V> = Vec::with_capacity(vec_capacity);
             // println!("{:?}", v.as_ptr());
-            // let v = unsafe {
-                // Vec::from_raw_parts(v.len(), vec_capacity, round_up_to_next(v.as_ptr() as uint, 64) as *mut RawChk<K, V>)
-            // };
+            unsafe {
+                v.set_len(vec_capacity);
+                // Vec::from_raw_parts(vec_capacity, vec_capacity, round_up_to_next(v.as_ptr() as uint, 64) as *mut RawChk<K, V>)
+                // Vec::from_raw_parts(vec_capacity, vec_capacity, v.as_mut_ptr())
+            }
             RawTable {
                 chunks: v,
+                size: 0
             }
         }
 
@@ -485,7 +489,7 @@ use std::slice::MutItems;
 
             unsafe {
                 let len = self.size() + 1;
-                self.chunks.set_len(len);
+                self.size = len;
             }
 
             FullIndex { idx: idx, hash: hash, nocopy: marker::NoCopy }
@@ -537,7 +541,8 @@ use std::slice::MutItems;
 
             unsafe {
                 let len = self.size() - 1;
-                self.chunks.set_len(len);
+                // self.chunks.set_len(len);
+                self.size = len;
             }
 
             tup
@@ -577,7 +582,7 @@ use std::slice::MutItems;
         /// The number of elements ever `put` in the hashtable, minus the number
         /// of elements ever `take`n.
         pub fn size(&self) -> uint {
-            self.chunks.len()
+            self.size
         }
 
         pub fn iter<'a>(&'a self) -> Entries<'a, K, V> {
@@ -619,14 +624,14 @@ use std::slice::MutItems;
             let to_skip = hsh.inspect() as uint & CHUNK_MASK;
             let num_skipped = ((hsh.inspect() as uint) >> 3) & hash_mask;
             // let (skipped, first) = self.chunks.mut_split_at(num_skipped);
-            let tmp = self.chunks.len();
-            unsafe { self.chunks.set_len(hash_mask + 1); }
-            let t: &mut Vec<RawChk<K,V>> = unsafe { &mut(*(self as *mut RawTable<K, V>)).chunks };
+            // let tmp = self.chunks.len();
+            // unsafe { self.chunks.set_len(hash_mask + 1); }
+            // let t: &mut Vec<RawChk<K,V>> = unsafe { &mut(*(self as *mut RawTable<K, V>)).chunks };
             let (skipped, first) = self.chunks.mut_split_at(num_skipped);
-            unsafe {
-                // let t: &mut Vec<()> = transmute(self);
-                t.set_len(tmp);
-            }
+            // unsafe {
+            //     // let t: &mut Vec<()> = transmute(self);
+            //     t.set_len(tmp);
+            // }
             // let (last, _) = skipped.mut_split_at((num_skipped +) % self.chunks.capacity());
             // let items = self.chunks.mut_iter().cycle().skip(skipped);
             let items = first.mut_iter().chain(skipped.mut_iter());
@@ -851,7 +856,7 @@ use std::slice::MutItems;
                 }
 
                 let len = self.size();
-                new_ht.chunks.set_len(len);
+                new_ht.size = len;
 
                 new_ht
             }
@@ -1322,6 +1327,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
         let unsfptr = unsafe{self as *mut HashMap<K, V, H, R>};
         let size = self.table.size();
         let cap = self.table.capacity();
+        let chunks = cap >> table::LOG2_CHUNK;
         // let hash_mask = self.table.capacity() - 1;
         // let mut spot = None;
         // let mut free_slot = None;
@@ -1332,7 +1338,15 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
         // table::round_up_to_next(size, table::CHUNK)
         let mut inclen = false;
         // let mut robin = None;
-        for (dib, ((hsh, key, val), idx)) in range_inclusive(0u, size).zip(self.table.chunk_iter(&hash)) {
+            // let cap = self.capacity();
+            let to_skip = hash.inspect() as uint & table::CHUNK_MASK;
+            let num_skipped = ((hash.inspect() as uint) >> 3) & (chunks - 1);
+            let (skipped, first) = self.table.chunks.mut_split_at(num_skipped);
+            let items = first.mut_iter().chain(skipped.mut_iter());
+            let chunk_iter = items.flat_map(|chunk_ref| {
+                table::mut_iter(chunk_ref)
+            }).zip(range(0u, cap).cycle().skip(num_skipped << table::LOG2_CHUNK)).skip(to_skip);
+        for (dib, ((hsh, key, val), idx)) in range_inclusive(0u, size).zip(chunk_iter) {
             // let chunk_ref = *chunk_ref;
             // println!("dib {} {}", dib, idx);
             // let mut iter = table::mut_iter(chunk_ref).enumerate();
@@ -1353,7 +1367,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
                         unsafe {
                             move_val_init(key, k);
                             move_val_init(val, v);
-                            (*unsfptr).table.chunks.set_len(potential_new_size);
+                            (*unsfptr).table.size = potential_new_size;
                             return None;
                             // inclen = true;
                             // break;
@@ -2419,7 +2433,7 @@ mod test_map {
 
                 for j in range_inclusive(1, i) {
                     let r = m.find(&j);
-                    println!("{}", m);
+                    // println!("{}", m);
                     assert_eq!((r, i), (Some(&j), i));
                 }
 
