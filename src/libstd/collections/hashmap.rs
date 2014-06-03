@@ -1299,105 +1299,125 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
         let potential_new_size = self.table.size() + 1;
         self.make_some_room(potential_new_size);
 
-        let unsfptr = unsafe{self as *mut HashMap<K, V, H, R>};
+        // let unsfptr = unsafe{self as *mut HashMap<K, V, H, R>};
         let size = self.table.size();
         let cap = self.table.capacity();
         let hash_mask = self.table.capacity() - 1;
         let robin = {
-        let mut spot = None;
-        let mut free_slot = None;
-        let mut result = None;
-        let mut to_skip = hash.inspect() as uint & 7;
-        // let mut i = 0;
-        // let chunks = self.table.chunk_iter(&hash);
-        // table::round_up_to_next(size, table::CHUNK)
-        let found = range_step_inclusive(0u, size+8, table::CHUNK).zip(self.table.chunk_iter(&hash)).any(|(dib, (idx, chunk_ref))| {
-            // let chunk_ref = *chunk_ref;
-            // println!("dib {} {}", dib, idx);
-            let mut iter = table::mut_iter(chunk_ref).enumerate();
-            let something = iter.skip(to_skip).any(|(o, (hsh, key, val))| {
-                unsafe{
-                let muti = (*unsfptr).table.safe_all_mut((idx + o) as int, false);
-                assert_eq!(muti.h as *mut u64, hsh as *mut u64);
-                }
-                // println!("{}->{} +{} {} {:?} {:?}", dib, idx, o, hsh, key, val);
-                match hsh {
-                    &0u64 => {
-                        // *hsh = hash.inspect();
-                        // move_val_init(key, k);
-                        // move_val_init(val, v);
-                        free_slot = Some((hsh, key, val));
-                        true
-                    }
-                    &full_hash => {
-                        if full_hash == hash.inspect() && k == *key {
-                            // result = Some(replace(val, v));
-                            result = Some(val);
-                            true
-                        } else {
-                            // let first_probe_index = self.probe(full_hash, 0);
-                            // let first_probe_index = (full_hash as uint) & hash_mask;
-                            // let raw_index = idx + o;
-
-                            // let probe_dib = if first_probe_index <= raw_index {
-                            //      // probe just went forward
-                            //     raw_index - first_probe_index
-                            // } else {
-                            //     // probe wrapped around the hashtable
-                            //     raw_index + (cap - first_probe_index)
-                            //     // raw_index + (self.table.capacity() - first_probe_index)
-                            // };
-                            // let probe_dib =
-                            let raw_index = idx + o;
-                            let probe_dib = bucket_dib(raw_index, full_hash, cap);
-                            if probe_dib < dib + o - to_skip {
-                                spot = Some((raw_index, full_hash, probe_dib));
-                                true
+            // let mut spot = None;
+            // let mut free_slot = None;
+            // let mut result = None;
+            let mut to_skip = hash.inspect() as uint & 7;
+            // let mut i = 0;
+            // let chunks = self.table.chunk_iter(&hash);
+            // table::round_up_to_next(size, table::CHUNK)
+            let f = range_step_inclusive(0u, size + table::CHUNK - 1, table::CHUNK).zip(self.table.chunk_iter(&hash)).map(|(dib, (idx, chunk_ref))| {
+                // let chunk_ref = *chunk_ref;
+                // println!("dib {} {}", dib, idx);
+                let mut iter = table::mut_iter(chunk_ref).enumerate();
+                let something = iter.skip(to_skip).map(|(o, (hsh, key, val))| {
+                    // unsafe{
+                    // let muti = (*unsfptr).table.safe_all_mut((idx + o) as int, false);
+                    // assert_eq!(muti.h as *mut u64, hsh as *mut u64);
+                    // }
+                    // println!("{}->{} +{} {} {:?} {:?}", dib, idx, o, hsh, key, val);
+                    match hsh {
+                        &0u64 => {
+                            // *hsh = hash.inspect();
+                            // move_val_init(key, k);
+                            // move_val_init(val, v);
+                            Some((Some((hsh, key)), Some(val), None))
+                        }
+                        &full_hash => {
+                            if full_hash == hash.inspect() && k == *key {
+                                // result = Some(replace(val, v));
+                                Some((None, Some(val), None))
                             } else {
-                                // if i <= size {
-                                //     i += 1;
-                                    false
+                                // let first_probe_index = self.probe(full_hash, 0);
+                                // let first_probe_index = (full_hash as uint) & hash_mask;
+                                // let raw_index = idx + o;
+
+                                // let probe_dib = if first_probe_index <= raw_index {
+                                //      // probe just went forward
+                                //     raw_index - first_probe_index
                                 // } else {
-                                //     // break
-                                //     true
-                                // }
+                                //     // probe wrapped around the hashtable
+                                //     raw_index + (cap - first_probe_index)
+                                //     // raw_index + (self.table.capacity() - first_probe_index)
+                                // };
+                                // let probe_dib =
+                                let raw_index = idx + o;
+                                let probe_dib = bucket_dib(raw_index, full_hash, cap);
+                                if probe_dib < dib + o - to_skip {
+                                    Some((None, None, Some((raw_index, full_hash, probe_dib))))
+                                } else {
+                                    None
+                                    // if i <= size {
+                                    //     i += 1;
+                                        // false
+                                    // } else {
+                                    //     // break
+                                    //     true
+                                    // }
+                                }
                             }
                         }
                     }
-                }
-            });
-            to_skip = 0;
-            something
-        });
+                }).skip_while(|o| o.is_none()).next().map(|o| o.unwrap());
+                to_skip = 0;
+                something
+            }).find(|o| o.is_some()).map(|o| o.unwrap());
             // println!("{:?}", (found, spot, free_slot.is_some(), result.is_some()));
-            match (found, spot, free_slot, result) {
-                (true, Some(t), _, _) => (Some((t, k, v)), 0),
-                (true, _, Some((hsh, key, val)), _) => {
+            // match (found, spot, free_slot, result) {
+            //     (true, Some(t), _, _) => (Some((t, k, v)), 0),
+            //     (true, _, Some((hsh, key, val)), _) => {
+            //         *hsh = hash.inspect();
+            //         unsafe {
+            //             move_val_init(key, k);
+            //             move_val_init(val, v);
+            //         }
+            //         (None, 1)
+            //     }
+            //     (true, _, _, Some(val)) => {
+            //         return Some(replace(val, v));
+            //     }
+            //     _ => (None, 0)
+            // }
+            // (found, spot, free_slot, result)
+            match f {
+                Some((None, Some(val), _)) => {
+                    return Some(replace(val, v));
+                }
+                Some((Some((hsh, key)), Some(val), _)) => {
                     *hsh = hash.inspect();
                     unsafe {
                         move_val_init(key, k);
                         move_val_init(val, v);
+                    //     let len = self.table.size() + 1;
+                    //     self.table.chunks.set_len(len);
+                    //     return None;
                     }
-                    (None, 1)
+                    Some(None)
                 }
-                (true, _, _, Some(val)) => {
-                    return Some(replace(val, v));
+                Some((None, None, Some((idx, full_hash, probe_dib)))) => {
+                    Some(Some((idx, full_hash, probe_dib, k, v)))
                 }
-                _ => (None, 0)
+                _ => None
             }
         };
         match robin {
-            (None, 1) => unsafe {
-                let len = self.table.size() + 1;
-                self.table.chunks.set_len(len);
-                return None;
-            },
-            (Some(((idx, full_hash, probe_dib), k, v)), _) => unsafe {
+            Some(Some((idx, full_hash, probe_dib, k, v))) => unsafe {
                 use std::kinds::marker::NoCopy;
                 self.robin_hood(table::FullIndex {idx:idx as int, hash:table::SafeHash{hash:full_hash},nocopy:NoCopy}, probe_dib, hash, k, v);
                 return None;
             },
-            (None, 0) => {}
+            Some(None) => {
+                unsafe {
+                    let len = self.table.size() + 1;
+                    self.table.chunks.set_len(len);
+                    return None;
+                }
+            }
             _ => {}
         }
             // for (o, (hsh, key, val)) in iter {
