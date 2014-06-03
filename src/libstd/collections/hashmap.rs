@@ -1039,6 +1039,25 @@ pub struct HashMap<K, V, H = sip::SipHasher, R = DefaultResizePolicy> {
     // We keep this at the end since it might as well have tail padding.
     resize_policy: DefaultResizePolicy,
 }
+    fn bucket_dib(raw_index: uint, hash: u64, cap: uint) -> uint {
+        // where the hash of the element that happens to reside at
+        // `index_of_elem` tried to place itself first.
+        // let first_probe_index = self.probe(&index_of_elem.hash(), 0);
+        let hash_mask = cap - 1;
+
+        // So I heard a rumor that unsigned overflow is safe in rust..
+        let first_probe_index = ((hash as uint) + 0) & hash_mask;
+
+        // let raw_index = index_of_elem.raw_index();
+
+        if first_probe_index <= raw_index {
+             // probe just went forward
+            raw_index - first_probe_index
+        } else {
+            // probe wrapped around the hashtable
+            raw_index + (cap - first_probe_index)
+        }
+    }
 
 impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
     // Probe the `idx`th bucket for a given hash, returning the index of the
@@ -1077,17 +1096,18 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
     fn bucket_distance(&self, index_of_elem: &table::FullIndex) -> uint {
         // where the hash of the element that happens to reside at
         // `index_of_elem` tried to place itself first.
-        let first_probe_index = self.probe(&index_of_elem.hash(), 0);
+        // let first_probe_index = self.probe(&index_of_elem.hash(), 0);
 
-        let raw_index = index_of_elem.raw_index();
+        // let raw_index = index_of_elem.raw_index();
 
-        if first_probe_index <= raw_index {
-             // probe just went forward
-            raw_index - first_probe_index
-        } else {
-            // probe wrapped around the hashtable
-            raw_index + (self.table.capacity() - first_probe_index)
-        }
+        // if first_probe_index <= raw_index {
+        //      // probe just went forward
+        //     raw_index - first_probe_index
+        // } else {
+        //     // probe wrapped around the hashtable
+        //     raw_index + (self.table.capacity() - first_probe_index)
+        // }
+        bucket_dib(index_of_elem.raw_index(), index_of_elem.hash().inspect(), self.table.capacity())
     }
 
     /// Search for a pre-hashed key.
@@ -1288,9 +1308,10 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
         let mut free_slot = None;
         let mut result = None;
         let mut to_skip = hash.inspect() as uint & 7;
+        let mut i = 0;
         // let chunks = self.table.chunk_iter(&hash);
         // table::round_up_to_next(size, table::CHUNK)
-        let found = range_step_inclusive(0u, size, table::CHUNK).zip(self.table.chunk_iter(&hash)).any(|(dib, (idx, chunk_ref))| {
+        let found = range_step_inclusive(0u, size+8, table::CHUNK).zip(self.table.chunk_iter(&hash)).any(|(dib, (idx, chunk_ref))| {
             // let chunk_ref = *chunk_ref;
             // println!("dib {} {}", dib, idx);
             let mut iter = table::mut_iter(chunk_ref).enumerate();
@@ -1299,7 +1320,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
                 let muti = (*unsfptr).table.safe_all_mut((idx + o) as int, false);
                 assert_eq!(muti.h as *mut u64, hsh as *mut u64);
                 }
-                // println!("{} {}", o, hsh);
+                println!("{}->{} +{} {} {:?} {:?}", dib, idx, o, hsh, key, val);
                 match hsh {
                     &0u64 => {
                         // *hsh = hash.inspect();
@@ -1315,23 +1336,31 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
                             true
                         } else {
                             // let first_probe_index = self.probe(full_hash, 0);
-                            let first_probe_index = (full_hash as uint) & hash_mask;
-                            let raw_index = idx + o;
+                            // let first_probe_index = (full_hash as uint) & hash_mask;
+                            // let raw_index = idx + o;
 
-                            let probe_dib = if first_probe_index <= raw_index {
-                                 // probe just went forward
-                                raw_index - first_probe_index
-                            } else {
-                                // probe wrapped around the hashtable
-                                raw_index + (cap - first_probe_index)
-                                // raw_index + (self.table.capacity() - first_probe_index)
-                            };
+                            // let probe_dib = if first_probe_index <= raw_index {
+                            //      // probe just went forward
+                            //     raw_index - first_probe_index
+                            // } else {
+                            //     // probe wrapped around the hashtable
+                            //     raw_index + (cap - first_probe_index)
+                            //     // raw_index + (self.table.capacity() - first_probe_index)
+                            // };
                             // let probe_dib =
+                            let raw_index = idx + o;
+                            let probe_dib = bucket_dib(raw_index, full_hash, cap);
                             if probe_dib < dib + o {
                                 spot = Some((raw_index, full_hash, probe_dib));
                                 true
                             } else {
-                                false
+                                if i <= size {
+                                    i += 1;
+                                    false
+                                } else {
+                                    // break
+                                    true
+                                }
                             }
                         }
                     }
@@ -1340,21 +1369,22 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
             to_skip = 0;
             something
         });
-        match (found, spot, free_slot, result) {
-            (true, Some(t), _, _) => (Some((t, k, v)), 0),
-            (true, _, Some((hsh, key, val)), _) => {
-                *hsh = hash.inspect();
-                unsafe {
-                    move_val_init(key, k);
-                    move_val_init(val, v);
+            println!("{:?}", (found, spot, free_slot.is_some(), result.is_some()));
+            match (found, spot, free_slot, result) {
+                (true, Some(t), _, _) => (Some((t, k, v)), 0),
+                (true, _, Some((hsh, key, val)), _) => {
+                    *hsh = hash.inspect();
+                    unsafe {
+                        move_val_init(key, k);
+                        move_val_init(val, v);
+                    }
+                    (None, 1)
                 }
-                (None, 1)
+                (true, _, _, Some(val)) => {
+                    return Some(replace(val, v));
+                }
+                _ => (None, 0)
             }
-            (true, _, _, Some(val)) => {
-                return Some(replace(val, v));
-            }
-            _ => (None, 0)
-        }
         };
         match robin {
             (None, 1) => unsafe {
@@ -1362,12 +1392,12 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
                 self.table.chunks.set_len(len);
                 return None;
             },
-            (None, 0) => {}
             (Some(((idx, full_hash, probe_dib), k, v)), _) => unsafe {
                 use std::kinds::marker::NoCopy;
                 self.robin_hood(table::FullIndex {idx:idx as int, hash:table::SafeHash{hash:full_hash},nocopy:NoCopy}, probe_dib, hash, k, v);
                 return None;
             },
+            (None, 0) => {}
             _ => {}
         }
             // for (o, (hsh, key, val)) in iter {
