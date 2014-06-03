@@ -1134,14 +1134,15 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                 table::Full(idx) => idx
             };
 
+
+            let (k, _) = self.table.read(&idx);
+            println!("{:?}", k);
             // We can finish the search early if we hit any bucket
             // with a lower distance to initial bucket than we've probed.
             if self.bucket_distance(&idx) < num_probes { return None }
 
             // If the hash doesn't match, it can't be this one..
             if *hash != idx.hash() { continue }
-
-            let (k, _) = self.table.read(&idx);
 
             // If the key doesn't match, it can't be this one..
             if !is_match(k) { continue }
@@ -1319,7 +1320,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
         let potential_new_size = self.table.size() + 1;
         self.make_some_room(potential_new_size);
 
-        // let unsfptr = unsafe{self as *mut HashMap<K, V, H, R>};
+        let unsfptr = unsafe{self as *mut HashMap<K, V, H, R>};
         let size = self.table.size();
         let cap = self.table.capacity();
         // let hash_mask = self.table.capacity() - 1;
@@ -1330,9 +1331,9 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
         // let mut i = 0;
         // let chunks = self.table.chunk_iter(&hash);
         // table::round_up_to_next(size, table::CHUNK)
-        let f = range_inclusive(0u, size).zip(
-            self.table.chunk_iter(&hash)
-        ).map(|(dib, ((hsh, key, val), idx))| {
+        let mut inclen = false;
+        // let mut robin = None;
+        for (dib, ((hsh, key, val), idx)) in range_inclusive(0u, size).zip(self.table.chunk_iter(&hash)) {
             // let chunk_ref = *chunk_ref;
             // println!("dib {} {}", dib, idx);
             // let mut iter = table::mut_iter(chunk_ref).enumerate();
@@ -1348,13 +1349,23 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
                         // move_val_init(key, k);
                         // move_val_init(val, v);
                         // Some((Some((hsh as *mut u64, key as *mut K)), Some(val as *mut V), None))
-                        Some(InsertEntry(hsh as *mut u64, key as *mut K, val as *mut V))
+                        // Some(InsertEntry(hsh as *mut u64, key as *mut K, val as *mut V))
+                        *hsh = hash.inspect();
+                        unsafe {
+                            move_val_init(key, k);
+                            move_val_init(val, v);
+                            (*unsfptr).table.chunks.set_len(potential_new_size);
+                            return None;
+                            // inclen = true;
+                            // break;
+                        }
                     }
                     &full_hash => {
                         if full_hash == hash.inspect() && k == *key {
                             // result = Some(replace(val, v));
                             // Some((None, Some(val as *mut V), None))
-                            Some(InsertVal(val as *mut V))
+                            // Some(InsertVal(val as *mut V))
+                            return Some(replace(val, v));
                         } else {
                             // let first_probe_index = self.probe(full_hash, 0);
                             // let first_probe_index = (full_hash as uint) & hash_mask;
@@ -1372,10 +1383,18 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
                             let raw_index = idx;
                             let probe_dib = bucket_dib(raw_index, full_hash, cap);
                             if probe_dib < dib {
-                                Some(RobinHood(raw_index, full_hash, probe_dib))
+                                // Some(RobinHood(raw_index, full_hash, probe_dib))
                                 // Some((None, None, Some(())))
-                            } else {
-                                None
+                                use std::kinds::marker::NoCopy;
+                                unsafe {
+                                (*unsfptr).robin_hood(table::FullIndex {idx:raw_index as int, hash:table::SafeHash{hash:full_hash},nocopy:NoCopy}, probe_dib, hash, k, v);
+                                }
+                                return None;
+                                // robin = Some((raw_index, full_hash, probe_dib, k, v));
+                                // break;
+                            }
+                            // else {
+                                // None
                                 // if i <= size {
                                 //     i += 1;
                                     // false
@@ -1383,14 +1402,27 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
                                 //     // break
                                 //     true
                                 // }
-                            }
+                            // }
                         }
                     }
                 }
             // }).find(|o| o.is_some()).map(|o| o.unwrap());
             // to_skip = 0;
             // something
-        }).find(|o| o.is_some()).map(|o| o.unwrap());
+        }
+        // if inclen {
+        //     let len = self.table.size() + 1;
+        //     unsafe {self.table.chunks.set_len(len);}
+        //     return None;
+        // }
+        // match robin {
+        //     Some((idx, full_hash, probe_dib, k, v)) => unsafe {
+        //         use std::kinds::marker::NoCopy;
+        //         self.robin_hood(table::FullIndex {idx:idx as int, hash:table::SafeHash{hash:full_hash},nocopy:NoCopy}, probe_dib, hash, k, v);
+        //         return None;
+        //     },
+        //     _ => {}
+        // }
         // println!("{:?}", (found, spot, free_slot.is_some(), result.is_some()));
         // match (found, spot, free_slot, result) {
         //     (true, Some(t), _, _) => (Some((t, k, v)), 0),
@@ -1408,29 +1440,29 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
         //     _ => (None, 0)
         // }
         // (found, spot, free_slot, result)
-        match f {
-            Some(InsertVal(val)) => {
-                return Some(replace(unsafe { &mut *val }, v));
-            }
-            Some(InsertEntry(hsh, key, val)) => {
-                unsafe {
-                    *hsh = hash.inspect();
-                    move_val_init(&mut *key, k);
-                    move_val_init(&mut *val, v);
-                     let len = self.table.size() + 1;
-                     self.table.chunks.set_len(len);
-                     return None;
-                }
-                // Some(None)
-            }
-            Some(RobinHood(idx, full_hash, probe_dib)) => {
-                // Some(Some((idx, full_hash, probe_dib, k, v)))
-                use std::kinds::marker::NoCopy;
-                self.robin_hood(table::FullIndex {idx:idx as int, hash:table::SafeHash{hash:full_hash},nocopy:NoCopy}, probe_dib, hash, k, v);
-                return None;
-            }
-            _ => {}
-        }
+        // match f {
+        //     Some(InsertVal(val)) => {
+        //         return Some(replace(unsafe { &mut *val }, v));
+        //     }
+        //     Some(InsertEntry(hsh, key, val)) => {
+        //         unsafe {
+        //             *hsh = hash.inspect();
+        //             move_val_init(&mut *key, k);
+        //             move_val_init(&mut *val, v);
+        //              let len = self.table.size() + 1;
+        //              self.table.chunks.set_len(len);
+        //              return None;
+        //         }
+        //         // Some(None)
+        //     }
+        //     Some(RobinHood(idx, full_hash, probe_dib)) => {
+        //         // Some(Some((idx, full_hash, probe_dib, k, v)))
+        //         use std::kinds::marker::NoCopy;
+        //         self.robin_hood(table::FullIndex {idx:idx as int, hash:table::SafeHash{hash:full_hash},nocopy:NoCopy}, probe_dib, hash, k, v);
+        //         return None;
+        //     }
+        //     _ => {}
+        // }
         // match robin {
         //     Some(Some((idx, full_hash, probe_dib, k, v))) => unsafe {
         //         use std::kinds::marker::NoCopy;
@@ -2387,6 +2419,7 @@ mod test_map {
 
                 for j in range_inclusive(1, i) {
                     let r = m.find(&j);
+                    println!("{}", m);
                     assert_eq!((r, i), (Some(&j), i));
                 }
 
