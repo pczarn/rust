@@ -659,8 +659,8 @@ use std::slice::MutItems;
     // }
 
     pub struct MutTriVecEntries<'a, K, V> {
-        ptr: *mut u64,
         end: *mut u64,
+        ptr: *mut u64,
         keys: *mut K,
         vals: *mut V,
         marker: marker::ContravariantLifetime<'a>,
@@ -668,6 +668,7 @@ use std::slice::MutItems;
     }
 
     impl<'a, K, V> Iterator<(&'a mut u64, &'a mut K, &'a mut V)> for MutTriVecEntries<'a, K, V> {
+        #[inline]
         fn next(&mut self) -> Option<(&'a mut u64, &'a mut K, &'a mut V)> {
             unsafe {
                 if self.ptr == self.end {
@@ -866,6 +867,9 @@ use std::slice::MutItems;
     #[unsafe_destructor]
     impl<K, V> Drop for RawTable<K, V> {
         fn drop(&mut self) {
+            unsafe {
+                self.chunks.set_len(0);
+            }
             // println!("start drop");
             // This is in reverse because we're likely to have partially taken
             // some elements out with `.move_iter()` from the front.
@@ -1345,7 +1349,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
             let items = first.mut_iter().chain(skipped.mut_iter());
             let chunk_iter = items.flat_map(|chunk_ref| {
                 table::mut_iter(chunk_ref)
-            }).zip(range(0u, cap).cycle().skip(num_skipped << table::LOG2_CHUNK)).skip(to_skip);
+            }).zip(range(num_skipped << table::LOG2_CHUNK, cap).chain(range(0u, cap))).skip(to_skip);
         for (dib, ((hsh, key, val), idx)) in range_inclusive(0u, size).zip(chunk_iter) {
             // let chunk_ref = *chunk_ref;
             // println!("dib {} {}", dib, idx);
