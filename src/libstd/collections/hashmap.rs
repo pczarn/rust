@@ -1310,11 +1310,15 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
         // let mut i = 0;
         // let chunks = self.table.chunk_iter(&hash);
         // table::round_up_to_next(size, table::CHUNK)
-        let f = range_step_inclusive(0u, size + table::CHUNK - 1, table::CHUNK).zip(self.table.chunk_iter(&hash)).map(|(dib, (idx, chunk_ref))| {
+        let f = range_inclusive(0u, size).zip(
+                self.table.chunk_iter(&hash).flat_map(|(idx, chunk_ref)| {
+                    table::mut_iter(chunk_ref).zip(range(idx, idx+8))
+                }).skip(to_skip)
+        ).map(|(dib, ((hsh, key, val), idx))| {
             // let chunk_ref = *chunk_ref;
             // println!("dib {} {}", dib, idx);
-            let mut iter = table::mut_iter(chunk_ref).enumerate();
-            let something = iter.skip(to_skip).map(|(o, (hsh, key, val))| {
+            // let mut iter = table::mut_iter(chunk_ref).enumerate();
+            // let something = iter.skip(to_skip).map(|(o, (hsh, key, val))| {
                 // unsafe{
                 // let muti = (*unsfptr).table.safe_all_mut((idx + o) as int, false);
                 // assert_eq!(muti.h as *mut u64, hsh as *mut u64);
@@ -1345,9 +1349,9 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
                             //     // raw_index + (self.table.capacity() - first_probe_index)
                             // };
                             // let probe_dib =
-                            let raw_index = idx + o;
+                            let raw_index = idx;
                             let probe_dib = bucket_dib(raw_index, full_hash, cap);
-                            if probe_dib < dib + o - to_skip {
+                            if probe_dib < dib {
                                 Some((None, None, Some((raw_index, full_hash, probe_dib))))
                             } else {
                                 None
@@ -1362,9 +1366,9 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
                         }
                     }
                 }
-            }).find(|o| o.is_some()).map(|o| o.unwrap());
-            to_skip = 0;
-            something
+            // }).find(|o| o.is_some()).map(|o| o.unwrap());
+            // to_skip = 0;
+            // something
         }).find(|o| o.is_some()).map(|o| o.unwrap());
         // println!("{:?}", (found, spot, free_slot.is_some(), result.is_some()));
         // match (found, spot, free_slot, result) {
