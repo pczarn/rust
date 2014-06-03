@@ -576,7 +576,7 @@ use std::slice::MutItems;
 
         /// The hashtable's capacity, similar to a vector's.
         pub fn capacity(&self) -> uint {
-            self.chunks.capacity() << LOG2_CHUNK
+            self.chunks.len() << LOG2_CHUNK
         }
 
         /// The number of elements ever `put` in the hashtable, minus the number
@@ -867,9 +867,6 @@ use std::slice::MutItems;
     #[unsafe_destructor]
     impl<K, V> Drop for RawTable<K, V> {
         fn drop(&mut self) {
-            unsafe {
-                self.chunks.set_len(0);
-            }
             // println!("start drop");
             // This is in reverse because we're likely to have partially taken
             // some elements out with `.move_iter()` from the front.
@@ -882,6 +879,9 @@ use std::slice::MutItems;
                     Empty(_)  => {},
                     Full(idx) => { self.take(idx); }
                 }
+            }
+            unsafe {
+                self.chunks.set_len(0);
             }
 
             // println!("end drop");
@@ -1340,17 +1340,17 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
         // let mut i = 0;
         // let chunks = self.table.chunk_iter(&hash);
         // table::round_up_to_next(size, table::CHUNK)
-        let mut inclen = false;
         // let mut robin = None;
-            // let cap = self.capacity();
-            let to_skip = hash.inspect() as uint & table::CHUNK_MASK;
-            let num_skipped = ((hash.inspect() as uint) >> 3) & (chunks - 1);
-            let (skipped, first) = self.table.chunks.mut_split_at(num_skipped);
-            let items = first.mut_iter().chain(skipped.mut_iter());
-            let chunk_iter = items.flat_map(|chunk_ref| {
-                table::mut_iter(chunk_ref)
-            }).zip(range(num_skipped << table::LOG2_CHUNK, cap).chain(range(0u, cap))).skip(to_skip);
-        for (dib, ((hsh, key, val), idx)) in range_inclusive(0u, size).zip(chunk_iter) {
+        // let cap = self.capacity();
+        let to_skip = hash.inspect() as uint & table::CHUNK_MASK;
+        let full_skipped = (hash.inspect() as uint) & (cap - 1);
+        let num_skipped = full_skipped >> 3;//((hash.inspect() as uint) >> 3) & (chunks - 1);
+        let (skipped, first) = self.table.chunks.mut_split_at(num_skipped);
+        let items = first.mut_iter().chain(skipped.mut_iter());
+        let chunk_iter = items.flat_map(|chunk_ref| {
+            table::mut_iter(chunk_ref)
+        }).skip(to_skip);
+        for ((dib, idx), (hsh, key, val)) in range_inclusive(0u, size).zip(range(full_skipped, cap).chain(range(0u, cap))).zip(chunk_iter) {
             // let chunk_ref = *chunk_ref;
             // println!("dib {} {}", dib, idx);
             // let mut iter = table::mut_iter(chunk_ref).enumerate();
@@ -1709,6 +1709,8 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
     /// Performs any necessary resize operations, such that there's space for
     /// new_size elements.
     fn make_some_room(&mut self, new_size: uint) {
+        use std::intrinsics::move_val_init;
+        use std::ptr;
         let (grow_at, shrink_at) = self.resize_policy.capacity_range(new_size);
         let cap = self.table.capacity();
 
@@ -1718,11 +1720,75 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         if cap <= grow_at {
             let new_capacity = cap << 1;
             self.resize(new_capacity);
+            // self.table.chunks.reserve_exact(new_capacity >> 3);
+
+            // unsafe {
+            //     let mut chunk_iter = self.table.chunks.mut_iter().flat_map(|chunk_ref| {
+            //         table::mut_iter(chunk_ref)
+            //     });
+            //     // let unsfptr = unsafe{self as *mut HashMap<K, V, H, R>};
+            //     // let t = &mut(*unsfptr).table.chunks;
+            //     // t.reserve(new_capacity >> 3);
+            //     for (hsh, key, val) in chunk_iter {
+            //         match (*hsh) as uint & new_capacity {
+            //             0u => {} // empty or in place
+            //             _ => {
+            //                 // let mut i = self.safe_all_mut(index.idx, true);
+            //                 // i.put(hash, k, v);
+
+            //                 // Drop the mutable constraint.
+            //                 // let k = ptr::read(key);
+            //                 // let v = ptr::read(val);
+            //                 let k = ptr::read(key as *mut K as *K);
+            //                 let v = ptr::read(val as *mut V as *V);
+
+            //                 let o = (cap >> 3) as int;
+            //                 *((hsh as *mut u64 as *mut table::RawChk<K, V>).offset(o) as *mut u64) = *hsh;
+            //                 move_val_init(&mut *((key as *mut K as *mut table::RawChk<K, V>).offset(o) as *mut K), k);
+            //                 move_val_init(&mut *((val as *mut V as *mut table::RawChk<K, V>).offset(o) as *mut V), v);
+            //                 // (*unsfptr).insert_hashed_nocheck(table::SafeHash{hash:full_hash}, k, v);
+            //                 *hsh = 0u64;
+            //             }
+            //         }
+            //     }
+            // }
+
+            // unsafe {
+            //     self.table.chunks.set_len(new_capacity >> 3);
+            // }
         } else if shrink_at <= cap {
             let new_capacity = cap >> 1;
-            self.resize(new_capacity);
+            // self.resize(new_capacity);
             // TODO faster shrink!
             // assert!(num::is_power_of_two(new_capacity));
+            unsafe {
+                let mut chunk_iter = self.table.chunks.mut_slice_from(new_capacity >> 3).mut_iter().flat_map(|chunk_ref| {
+                    table::mut_iter(chunk_ref)
+                });
+                let unsfptr = unsafe{self as *mut HashMap<K, V, H, R>};
+                let t = &mut(*unsfptr).table.chunks;
+                t.set_len(new_capacity >> 3);
+                let keep_len = self.table.size;
+                for (hsh, key, val) in chunk_iter {
+                    match hsh {
+                        &0u64 => {}
+                        &full_hash => {
+                            let k = ptr::read(key as *mut K as *K);
+                            let v = ptr::read(val as *mut V as *V);
+                            (*unsfptr).insert_hashed_nocheck(table::SafeHash{hash:full_hash}, k, v);
+                            *hsh = 0u64;
+                        }
+                    }
+                }
+                self.table.size = keep_len;
+            }
+            self.table.chunks.shrink_to_fit();
+            // assert_eq!(self.table.chunks.capacity(), self.table.chunks.len());
+
+            // let to_skip = hash.inspect() as uint & table::CHUNK_MASK;
+            // let full_skipped = (hash.inspect() as uint) & (cap - 1);
+            // let num_skipped = full_skipped >> 3;//((hash.inspect() as uint) >> 3) & (chunks - 1);
+
             // // self.table.chunks.reserve_exact(new_capacity >> 3);
             // unsafe {
             //     // set_memory(self.table.chunks.as_mut_ptr().offset((new_capacity >> 3) as int), 0u8, new_capacity >> 3);
