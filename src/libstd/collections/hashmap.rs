@@ -1308,7 +1308,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
         let mut free_slot = None;
         let mut result = None;
         let mut to_skip = hash.inspect() as uint & 7;
-        let mut i = 0;
+        // let mut i = 0;
         // let chunks = self.table.chunk_iter(&hash);
         // table::round_up_to_next(size, table::CHUNK)
         let found = range_step_inclusive(0u, size+8, table::CHUNK).zip(self.table.chunk_iter(&hash)).any(|(dib, (idx, chunk_ref))| {
@@ -1320,7 +1320,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
                 let muti = (*unsfptr).table.safe_all_mut((idx + o) as int, false);
                 assert_eq!(muti.h as *mut u64, hsh as *mut u64);
                 }
-                println!("{}->{} +{} {} {:?} {:?}", dib, idx, o, hsh, key, val);
+                // println!("{}->{} +{} {} {:?} {:?}", dib, idx, o, hsh, key, val);
                 match hsh {
                     &0u64 => {
                         // *hsh = hash.inspect();
@@ -1350,17 +1350,17 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
                             // let probe_dib =
                             let raw_index = idx + o;
                             let probe_dib = bucket_dib(raw_index, full_hash, cap);
-                            if probe_dib < dib + o {
+                            if probe_dib < dib + o - to_skip {
                                 spot = Some((raw_index, full_hash, probe_dib));
                                 true
                             } else {
-                                if i <= size {
-                                    i += 1;
+                                // if i <= size {
+                                //     i += 1;
                                     false
-                                } else {
-                                    // break
-                                    true
-                                }
+                                // } else {
+                                //     // break
+                                //     true
+                                // }
                             }
                         }
                     }
@@ -1369,7 +1369,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
             to_skip = 0;
             something
         });
-            println!("{:?}", (found, spot, free_slot.is_some(), result.is_some()));
+            // println!("{:?}", (found, spot, free_slot.is_some(), result.is_some()));
             match (found, spot, free_slot, result) {
                 (true, Some(t), _, _) => (Some((t, k, v)), 0),
                 (true, _, Some((hsh, key, val)), _) => {
@@ -1705,7 +1705,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                 probe = self.probe_next(probe);
             }
 
-            println!("{} {} {}", index.raw_index(), dib_param, hash.inspect());
+            // println!("{} {} {}", index.raw_index(), dib_param, hash.inspect());
             fail!("HashMap fatal error: 100% load factor?");
         }}
     }
