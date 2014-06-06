@@ -48,7 +48,7 @@ mod table {
     use ptr::set_memory;
     use ptr;
     use rt::heap::{allocate, deallocate};
-    use tuple::Tuple8;
+    use tuple::{Tuple3, Tuple8};
     use container::Container;
     use vec::Vec;
     use iter::{Iterator, CloneableIterator};
@@ -651,11 +651,13 @@ mod table {
         pub fn mut_iter<'a, K, V>(this: &'a mut RawChk<K, V>) -> MutTriVecEntries<'a, K, V> {
             let &(ref mut hsh, ref mut key, ref mut val) = this;
             let ptr = hsh as *mut u64;
+            let valptr = val as *mut V;
             MutTriVecEntries {
                 ptr: ptr,
-                end: unsafe { ptr.offset(CHUNK as int) },
+                // end: unsafe { ptr.offset(CHUNK as int) },
                 keys: key as *mut K,
-                vals: val as *mut V,
+                vals: valptr,
+                end: unsafe { valptr.offset(CHUNK as int) },
                 marker: marker::ContravariantLifetime,
                 marker2: marker::NoCopy,
             }
@@ -663,10 +665,10 @@ mod table {
     // }
 
     pub struct MutTriVecEntries<'a, K, V> {
-        end: *mut u64,
         ptr: *mut u64,
         keys: *mut K,
         vals: *mut V,
+        end: *mut V,
         marker: marker::ContravariantLifetime<'a>,
         marker2: marker::NoCopy
     }
@@ -675,7 +677,7 @@ mod table {
         #[inline]
         fn next(&mut self) -> Option<(&'a mut u64, &'a mut K, &'a mut V)> {
             unsafe {
-                if self.ptr == self.end {
+                if self.vals >= self.end {
                     None
                 } else {
                     let tmp = (self.ptr, self.keys, self.vals);
@@ -683,6 +685,58 @@ mod table {
                     self.keys = self.keys.offset(1);
                     self.vals = self.vals.offset(1);
                     Some(transmute(tmp))
+                }
+            }
+        }
+    }
+
+    pub struct TriAryIter<'a, K, V> {
+        end: *mut RawChk<K, V>,
+        ptr: *mut RawChk<K, V>,
+        key: *mut RawChk<K, V>,
+        val: *mut RawChk<K, V>,
+        marker: marker::ContravariantLifetime<'a>,
+        marker2: marker::NoCopy
+    }
+
+    impl<'a, K, V> TriAryIter<'a, K, V> {
+        pub fn new(slice: &'a mut [RawChk<K, V>]) -> TriAryIter<'a, K, V> {
+            let len = slice.len();
+            let ptr = slice.as_mut_ptr();
+            unsafe {
+                TriAryIter {
+                    ptr: ptr,
+                    end: ptr.offset(len as int),
+                    key: (*ptr).mut1() as *mut [K, ..CHUNK] as *mut RawChk<K, V>,
+                    val: (*ptr).mut2() as *mut [V, ..CHUNK] as *mut RawChk<K, V>,
+                    marker: marker::ContravariantLifetime,
+                    marker2: marker::NoCopy
+                }
+            }
+        }
+    }
+
+    impl<'a, K, V> Iterator<MutTriVecEntries<'a, K, V>> for TriAryIter<'a, K, V> {
+        fn next(&mut self) -> Option<MutTriVecEntries<K, V>> {
+            if self.ptr == self.end {
+                None
+            } else {
+                unsafe {
+                    // align issue?
+                    let next_ptr = self.ptr.offset(1);
+                    let r = MutTriVecEntries {
+                        ptr: self.ptr as *mut u64,
+                        keys: self.key as *mut K,
+                        vals: self.val as *mut V,
+                        end: next_ptr as *mut V,
+                        // end: (self.ptr as *mut u64)
+                        marker: marker::ContravariantLifetime,
+                        marker2: marker::NoCopy
+                    };
+                    self.ptr = next_ptr;
+                    self.key = self.key.offset(1);
+                    self.val = self.val.offset(1);
+                    Some(r)
                 }
             }
         }
@@ -1347,11 +1401,25 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
         let full_skipped = (hash.inspect() as uint) & (cap - 1);
         let num_skipped = full_skipped >> 3;//((hash.inspect() as uint) >> 3) & (chunks - 1);
         let (skipped, first) = self.table.chunks.mut_split_at(num_skipped);
-        let items = first.mut_iter().chain(skipped.mut_iter());
-        let chunk_iter = items.flat_map(|chunk_ref| {
-            table::mut_iter(chunk_ref)
-        }).skip(to_skip);
-        for ((dib, idx), (hsh, key, val)) in range_inclusive(0u, size).zip(range(full_skipped, cap).chain(range(0u, cap))).zip(chunk_iter) {
+        // let items = first.mut_iter().chain(skipped.mut_iter());
+        // let chunk_iter = items.flat_map(|chunk_ref| {
+            // table::mut_iter(chunk_ref)
+        // }).skip(to_skip);
+
+        let mut items = table::TriAryIter::new(first).chain(table::TriAryIter::new(skipped));
+        let mut triples = items.next().unwrap();
+        for _ in range(0, to_skip) {
+            triples.next();
+        }
+
+        for (dib, idx) in range_inclusive(0u, size).zip(range(full_skipped, cap).chain(range(0u, cap))) {
+            let (hsh, key, val) = match triples.next() {
+                Some(t) => t,
+                None => {
+                    triples = items.next().unwrap();
+                    triples.next().unwrap()
+                }
+            };
             // let chunk_ref = *chunk_ref;
             // println!("dib {} {}", dib, idx);
             // let mut iter = table::mut_iter(chunk_ref).enumerate();
