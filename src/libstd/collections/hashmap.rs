@@ -657,12 +657,26 @@ mod table {
                 // end: unsafe { ptr.offset(CHUNK as int) },
                 keys: key as *mut K,
                 vals: valptr,
-                end: unsafe { valptr.offset(CHUNK as int) },
+                end: unsafe { (this as *mut RawChk<K, V>).offset(1) } as *mut V, //align issue?
                 marker: marker::ContravariantLifetime,
                 marker2: marker::NoCopy,
             }
         }
-    // }
+
+    pub fn mut_iter_at<'a, K, V>(this: &'a mut RawChk<K, V>, to_skip: uint) -> MutTriVecEntries<'a, K, V> {
+        let &(ref mut hsh, ref mut key, ref mut val) = this;
+        let ptr = hsh as *mut u64;
+        let valptr = val as *mut V;
+        let off = to_skip as int;
+        MutTriVecEntries {
+            ptr: unsafe { ptr.offset(off) },
+            keys: unsafe { (key as *mut K).offset(off) },
+            vals: unsafe { valptr.offset(off) },
+            end: unsafe { (this as *mut RawChk<K, V>).offset(1) } as *mut V, //align issue?
+            marker: marker::ContravariantLifetime,
+            marker2: marker::NoCopy,
+        }
+    }
 
     pub struct MutTriVecEntries<'a, K, V> {
         ptr: *mut u64,
@@ -1401,23 +1415,36 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
         let full_skipped = (hash.inspect() as uint) & (cap - 1);
         let num_skipped = full_skipped >> 3;//((hash.inspect() as uint) >> 3) & (chunks - 1);
         let (skipped, first) = self.table.chunks.mut_split_at(num_skipped);
+        let (one, first) = first.mut_split_at(1);
         // let items = first.mut_iter().chain(skipped.mut_iter());
         // let chunk_iter = items.flat_map(|chunk_ref| {
             // table::mut_iter(chunk_ref)
         // }).skip(to_skip);
 
         let mut items = table::TriAryIter::new(first).chain(table::TriAryIter::new(skipped));
-        let mut triples = items.next().unwrap();
-        for _ in range(0, to_skip) {
-            triples.next();
-        }
+        // let mut triples = items.next().unwrap();
+        // for _ in range(0, to_skip) {
+        //     triples.next();
+        // }
+        let mut triples = unsafe {
+            table::mut_iter_at(one.unsafe_mut_ref(0), to_skip)
+        };
 
         for (dib, idx) in range_inclusive(0u, size).zip(range(full_skipped, cap).chain(range(0u, cap))) {
             let (hsh, key, val) = match triples.next() {
                 Some(t) => t,
                 None => {
-                    triples = items.next().unwrap();
-                    triples.next().unwrap()
+                    triples = match items.next() {
+                        Some(it) => it,
+                        None => {
+                            // items = table::TriAryIter::new(skipped);
+                            fail!(format!("dib {} (0-{}) idx {}. cap {} full_skipped {}", dib, size, idx, cap, full_skipped))
+                        }
+                    };
+                    match triples.next() {
+                        Some(t) => t,
+                        None => fail!(format!("failed :( dib {} (0-{}) idx {}. cap {} full_skipped {}", dib, size, idx, cap, full_skipped))
+                    }
                 }
             };
             // let chunk_ref = *chunk_ref;
