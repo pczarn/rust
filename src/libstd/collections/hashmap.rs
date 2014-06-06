@@ -889,10 +889,6 @@ mod table {
             unsafe {
                 self.chunks.set_len(0);
             }
-
-            // println!("end drop");
-
-            // assert_eq!(self.size(), 0);
         }
     }
 }
@@ -1723,48 +1719,51 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
 
         if cap <= grow_at {
             let new_capacity = cap << 1;
-            // self.resize(new_capacity);
-            self.table.chunks.reserve_exact(new_capacity >> 3);
+            self.resize(new_capacity);
+            // test_drops' failed at 'assertion failed: v.is_some()', src/libstd/collections/hashmap.rs:2462
+            // test_lots_of_insertions' failed at 'assertion failed: `(left == right) && (right == left)` (left: `(None, 30)`, right: `(Some(4), 30)`)', src/libstd/collections/hashmap.rs:2508
+            // test_resize_policy' failed at 'assertion failed: `(left == right) && (right == left)` (left: `23`, right: `1`)', src/libstd/collections/hashmap.rs:2851
+            // self.table.chunks.reserve_exact(new_capacity >> 3);
 
-            let keep_len = self.table.size;
-            unsafe {
-                let mut chunk_iter = self.table.chunks.mut_iter().flat_map(|chunk_ref| {
-                    table::mut_iter(chunk_ref)
-                });
-                let unsfptr = unsafe{self as *mut HashMap<K, V, H>};
-                let t = &mut(*unsfptr).table.chunks;
-                t.set_len(new_capacity >> 3);
-                // t.reserve(new_capacity >> 3);
-                for (hsh, key, val) in chunk_iter {
-                    match (*hsh) as uint & new_capacity {
-                        0u => {} // empty or in place
-                        new_capacity => {
-                            // let mut i = self.safe_all_mut(index.idx, true);
-                            // i.put(hash, k, v);
+            // let keep_len = self.table.size;
+            // unsafe {
+            //     let mut chunk_iter = self.table.chunks.mut_iter().flat_map(|chunk_ref| {
+            //         table::mut_iter(chunk_ref)
+            //     });
+            //     let unsfptr = unsafe{self as *mut HashMap<K, V, H>};
+            //     let t = &mut(*unsfptr).table.chunks;
+            //     t.set_len(new_capacity >> 3);
+            //     // t.reserve(new_capacity >> 3);
+            //     for (hsh, key, val) in chunk_iter {
+            //         match (*hsh) as uint & new_capacity {
+            //             0u => {} // empty or in place
+            //             new_capacity => {
+            //                 // let mut i = self.safe_all_mut(index.idx, true);
+            //                 // i.put(hash, k, v);
 
-                            // Drop the mutable constraint.
-                            // let k = ptr::read(key);
-                            // let v = ptr::read(val);
-                            let k = ptr::read(key as *mut K as *K);
-                            let v = ptr::read(val as *mut V as *V);
+            //                 // Drop the mutable constraint.
+            //                 // let k = ptr::read(key);
+            //                 // let v = ptr::read(val);
+            //                 let k = ptr::read(key as *mut K as *K);
+            //                 let v = ptr::read(val as *mut V as *V);
 
-                            // let o = (cap >> 3) as int;
-                            // *((hsh as *mut u64 as *mut table::RawChk<K, V>).offset(o) as *mut u64) = *hsh;
-                            // move_val_init(&mut *((key as *mut K as *mut table::RawChk<K, V>).offset(o) as *mut K), k);
-                            // move_val_init(&mut *((val as *mut V as *mut table::RawChk<K, V>).offset(o) as *mut V), v);
-                            // (*unsfptr).insert_hashed_nocheck(table::SafeHash{hash:full_hash}, k, v);
-                            let hash = *hsh;
-                            *hsh = 0u64; // to be safe
-                            (*unsfptr).insert_hashed_nocheck(table::SafeHash{hash:hash}, k, v);
-                        }
-                    }
-                }
-            }
+            //                 // let o = (cap >> 3) as int;
+            //                 // *((hsh as *mut u64 as *mut table::RawChk<K, V>).offset(o) as *mut u64) = *hsh;
+            //                 // move_val_init(&mut *((key as *mut K as *mut table::RawChk<K, V>).offset(o) as *mut K), k);
+            //                 // move_val_init(&mut *((val as *mut V as *mut table::RawChk<K, V>).offset(o) as *mut V), v);
+            //                 // (*unsfptr).insert_hashed_nocheck(table::SafeHash{hash:full_hash}, k, v);
+            //                 let hash = *hsh;
+            //                 *hsh = 0u64; // to be safe
+            //                 (*unsfptr).insert_hashed_nocheck(table::SafeHash{hash:hash}, k, v);
+            //             }
+            //         }
+            //     }
+            // }
 
             // unsafe {
             //     self.table.chunks.set_len(new_capacity >> 3);
             // }
-            self.table.size = keep_len;
+            // self.table.size = keep_len;
         } else if shrink_at <= cap {
             let new_capacity = cap >> 1;
             // self.resize(new_capacity);
