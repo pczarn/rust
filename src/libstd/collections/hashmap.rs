@@ -20,12 +20,15 @@ use hash::{Hash, Hasher, sip};
 use iter::{Iterator, FromIterator, FilterMap, Chain, Repeat, Zip, Extendable};
 use iter::{range, range_inclusive, range_step_inclusive, FromIterator};
 use iter;
+use slice::MutableVector;
 use mem::replace;
 use num;
 use option::{Some, None, Option};
 use rand::Rng;
 use rand;
 use result::{Ok, Err};
+use kinds::marker;
+use mem::overwrite;
 
 use vec::Vec;
 use slice::ImmutableVector;
@@ -45,13 +48,14 @@ mod table {
     use ptr::set_memory;
     use ptr;
     use rt::heap::{allocate, deallocate};
+    use tuple::Tuple8;
+    use container::Container;
+    use vec::Vec;
+    use iter::{Iterator, CloneableIterator};
+    use iter::{range_step_inclusive, range_step};
+    use iter::{RangeStepInclusive, Zip, Skip, Cycle, Chain, RangeStep, Range, FlatMap};
+    use slice::{MutItems, MutableVector};
 
-use tuple::Tuple8;
-use container::Container;
-use vec::Vec;
-use iter::{Iterator, range_step_inclusive, range_step};
-use iter::{RangeStepInclusive, Zip, Skip, Cycle, Chain, RangeStep, Range, FlatMap};
-use std::slice::MutItems;
     static EMPTY_BUCKET: u64 = 0u64;
 
     /// The raw hashtable, providing safe-ish access to the unzipped and highly
@@ -1324,13 +1328,12 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
     }
 
     fn swap(&mut self, k: K, v: V) -> Option<V> {
-        use std::intrinsics::move_val_init;
-        use std::mem::transmute;
+        use mem::transmute;
         let hash = self.make_hash(&k);
         let potential_new_size = self.table.size() + 1;
         self.make_some_room(potential_new_size);
 
-        let unsfptr = unsafe{self as *mut HashMap<K, V, H, R>};
+        let unsfptr = unsafe{self as *mut HashMap<K, V, H>};
         let size = self.table.size();
         let cap = self.table.capacity();
         let chunks = cap >> table::LOG2_CHUNK;
@@ -1371,8 +1374,8 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
                         // Some(InsertEntry(hsh as *mut u64, key as *mut K, val as *mut V))
                         *hsh = hash.inspect();
                         unsafe {
-                            move_val_init(key, k);
-                            move_val_init(val, v);
+                            overwrite(key, k);
+                            overwrite(val, v);
                             (*unsfptr).table.size = potential_new_size;
                             return None;
                             // inclen = true;
@@ -1404,9 +1407,8 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
                             if probe_dib < dib {
                                 // Some(RobinHood(raw_index, full_hash, probe_dib))
                                 // Some((None, None, Some(())))
-                                use std::kinds::marker::NoCopy;
                                 unsafe {
-                                (*unsfptr).robin_hood(table::FullIndex {idx:raw_index as int, hash:table::SafeHash{hash:full_hash},nocopy:NoCopy}, probe_dib, hash, k, v);
+                                (*unsfptr).robin_hood(table::FullIndex {idx:raw_index as int, hash:table::SafeHash{hash:full_hash},nocopy:marker::NoCopy}, probe_dib, hash, k, v);
                                 }
                                 return None;
                                 // robin = Some((raw_index, full_hash, probe_dib, k, v));
@@ -1711,8 +1713,8 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
     /// Performs any necessary resize operations, such that there's space for
     /// new_size elements.
     fn make_some_room(&mut self, new_size: uint) {
-        use std::intrinsics::move_val_init;
-        use std::ptr;
+        use mem::overwrite;
+        use ptr;
         let (grow_at, shrink_at) = self.resize_policy.capacity_range(new_size);
         let cap = self.table.capacity();
 
@@ -1729,7 +1731,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                 let mut chunk_iter = self.table.chunks.mut_iter().flat_map(|chunk_ref| {
                     table::mut_iter(chunk_ref)
                 });
-                let unsfptr = unsafe{self as *mut HashMap<K, V, H, R>};
+                let unsfptr = unsafe{self as *mut HashMap<K, V, H>};
                 let t = &mut(*unsfptr).table.chunks;
                 t.set_len(new_capacity >> 3);
                 // t.reserve(new_capacity >> 3);
@@ -1773,7 +1775,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                 let mut chunk_iter = self.table.chunks.mut_slice_from(new_capacity >> 3).mut_iter().flat_map(|chunk_ref| {
                     table::mut_iter(chunk_ref)
                 });
-                let unsfptr = unsafe{self as *mut HashMap<K, V, H, R>};
+                let unsfptr = unsafe{self as *mut HashMap<K, V, H>};
                 let t = &mut(*unsfptr).table.chunks;
                 t.set_len(new_capacity >> 3);
                 for (hsh, key, val) in chunk_iter {
