@@ -870,14 +870,16 @@ use std::slice::MutItems;
             // println!("start drop");
             // This is in reverse because we're likely to have partially taken
             // some elements out with `.move_iter()` from the front.
-            for i in range_step_inclusive(self.capacity() as int - 1, 0, -1) {
-                // Check if the size is 0, so we don't do a useless scan when
-                // dropping empty tables such as on resize.
-                if self.size() == 0 { break }
+            if self.size != 0 {
+                for i in range_step_inclusive(self.capacity() as int - 1, 0, -1) {
+                    // Check if the size is 0, so we don't do a useless scan when
+                    // dropping empty tables such as on resize.
+                    if self.size == 0 { break }
 
-                match self.peek(i as uint) {
-                    Empty(_)  => {},
-                    Full(idx) => { self.take(idx); }
+                    match self.peek(i as uint) {
+                        Empty(_)  => {},
+                        Full(idx) => { self.take(idx); }
+                    }
                 }
             }
             unsafe {
