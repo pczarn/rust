@@ -1370,7 +1370,6 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
         // items.next();
 
         let mut triples = unsafe {
-            // items.next();//.unwrap().skip(to_skip)
             table::mut_iter_at((*unsfptr).table.chunks.as_mut_slice().unsafe_mut_ref(num_skipped), to_skip)
         };
 
@@ -1378,17 +1377,8 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
             let (hsh, key, val) = match triples.next() {
                 Some(t) => t,
                 None => {
-                    triples = match items.next() {
-                        Some(it) => it,
-                        None => {
-                            // items = table::TriAryIter::new(skipped);
-                            fail!(format!("dib {} (0-{}) idx {}. cap {} full_skipped {}", dib, size, idx, cap, full_skipped))
-                        }
-                    };
-                    match triples.next() {
-                        Some(t) => t,
-                        None => fail!(format!("failed :( dib {} (0-{}) idx {}. cap {} full_skipped {}", dib, size, idx, cap, full_skipped))
-                    }
+                    triples = items.next().unwrap();
+                    triples.next().unwrap()
                 }
             };
 
@@ -1400,8 +1390,6 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
                         overwrite(val, v);
                         (*unsfptr).table.size = potential_new_size;
                         return None;
-                        // inclen = true;
-                        // break;
                     }
                 }
                 &full_hash => {
@@ -1443,16 +1431,8 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
                                     let (hsh, key, val) = match triples_clone.next() {
                                         Some(t) => t,
                                         None => {
-                                            triples_clone = match items_clone.next() {
-                                                Some(it) => it,
-                                                None => {
-                                                    fail!(format!("robin dib {} (0-{}) idx {}. cap {} full_skipped {}", dib, size, idx, cap, full_skipped))
-                                                }
-                                            };
-                                            match triples_clone.next() {
-                                                Some(t) => t,
-                                                None => fail!(format!("hood failed :( dib {} (0-{}) idx {}. cap {} full_skipped {}", dib, size, idx, cap, full_skipped))
-                                            }
+                                            triples_clone = items_clone.next().unwrap();
+                                            triples_clone.next().unwrap()
                                         }
                                     };
 
