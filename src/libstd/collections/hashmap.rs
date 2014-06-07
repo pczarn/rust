@@ -295,7 +295,7 @@ mod table {
         #[allow(experimental)]
         pub fn new(capacity: uint) -> RawTable<K, V> {
             // TODO write capacity >> 3?
-            let vec_cap = capacity >> 3;
+            let vec_cap = capacity >> LOG2_CHUNK;
             unsafe {
                 let mut ret = RawTable::new_uninitialized(vec_cap);
                 set_memory(ret.chunks.as_mut_ptr(), 0u8, vec_cap);
@@ -345,21 +345,10 @@ mod table {
             #![inline(always)]
             let idx = idx as uint;
             unsafe {
-                let &(ref hashes, ref keys, ref vals) = &*self.chunks.as_ptr().offset((idx >> 3) as int);
-                (&'a hashes[idx & 7], // CHUNK_MASK
-                 &'a keys[idx & 7],
-                 &'a vals[idx & 7])
-            }
-        }
-
-        fn ref_mut_idx<'a>(&'a mut self, idx: int) -> (&'a mut u64, &'a mut K, &'a mut V) {
-            #![inline(always)]
-            let idx = idx as uint;
-            unsafe {
-                let &(ref mut hashes, ref mut keys, ref mut vals) = &mut *self.chunks.as_mut_ptr().offset((idx >> 3) as int);
-                (&'a mut hashes[idx & 7],
-                 &'a mut keys[idx & 7],
-                 &'a mut vals[idx & 7])
+                let &(ref hashes, ref keys, ref vals) = &*self.chunks.as_ptr().offset((idx >> LOG2_CHUNK) as int);
+                (&'a hashes[idx & CHUNK_MASK], // CHUNK_MASK
+                 &'a keys[idx & CHUNK_MASK],
+                 &'a vals[idx & CHUNK_MASK])
             }
         }
 
@@ -367,56 +356,55 @@ mod table {
             #![inline(always)]
             let idx = idx as uint;
             unsafe {
-                let &(ref hashes, ref keys, ref vals) = &*self.chunks.as_ptr().offset((idx >> 3) as int);
-                (&'a hashes[idx & 7] as *u64,
-                 &'a keys[idx & 7] as *K,
-                 &'a vals[idx & 7] as *V)
+                let &(ref hashes, ref keys, ref vals) = &*self.chunks.as_ptr().offset((idx >> LOG2_CHUNK) as int);
+                (&'a hashes[idx & CHUNK_MASK] as *u64,
+                 &'a keys[idx & CHUNK_MASK] as *K,
+                 &'a vals[idx & CHUNK_MASK] as *V)
             }
         }
 
         pub fn ptr_mut_idx<'a>(&'a mut self, idx: int) -> (*mut u64, *mut K, *mut V) {
             #![inline(always)]
+            let idx = idx as uint;
             unsafe {
-                // let &(ref mut hashes, ref mut keys, ref mut vals) = &mut *self.chunks.as_mut_ptr().offset((idx as uint >> 3) as int);
-                // ((hashes.mut0() as *mut u64).offset(idx & 7),
-                //  (keys.mut0()   as *mut  K ).offset(idx & 7),
-                //  (vals.mut0()   as *mut  V ).offset(idx & 7))
-                let idx = idx as uint;
-                let base = self.chunks.as_mut_ptr() as *mut u8;
-                let chk: uint = size_of::<TriAry<K, V>>() >> 3;
-                let k = size_of::<K>() as int;
-                let v = size_of::<V>() as int;
-                // let koff = base.offset((chk * idx) as int + (idx & 7) as int * (k - chk as int) + 64)
-                let hr = base.offset((chk * idx) as int + (idx & 7) as int * (8i - chk as int));
-                let kr = base.offset((chk * idx) as int + (idx & 7) as int * (k - chk as int) + 64);
-                let vr = base.offset((chk * idx) as int + (idx & 7) as int * (v - chk as int) + 64 + k * 8);
-                (hr as *mut u64, kr as *mut K, vr as *mut V)
+                let &(ref mut hashes, ref mut keys, ref mut vals) = &mut *self.chunks.as_mut_ptr().offset((idx >> LOG2_CHUNK) as int);
+                (&'a mut hashes[idx & CHUNK_MASK] as *mut u64,
+                 &'a mut keys[idx & CHUNK_MASK] as *mut K,
+                 &'a mut vals[idx & CHUNK_MASK] as *mut V)
             }
         }
 
-        pub fn hash_pos<'a>(&'a mut self, idx: int) -> *mut u64 {
-            #![inline(always)]
-            unsafe {
-                // let &(ref mut hashes, _, _) = &mut *self.chunks.as_mut_ptr().offset((idx as uint >> 3) as int);
-                // (hashes.mut0() as *mut u64).offset(idx & 7)
-                let idx = idx as uint;
-                let base = self.chunks.as_mut_ptr();
-                let chksz: uint = size_of::<TriAry<K, V>>();
-                (base as *mut u8).offset(((chksz >> 3) * idx) as int + (idx & 7) as int * (8i - (chksz >> 3) as int)) as *mut u64
-            }
-        }
+        // pub fn ptr_mut_idx<'a>(&'a mut self, idx: int) -> (*mut u64, *mut K, *mut V) {
+        //     #![inline(always)]
+        //     unsafe {
+        //         // let &(ref mut hashes, ref mut keys, ref mut vals) = &mut *self.chunks.as_mut_ptr().offset((idx as uint >> 3) as int);
+        //         // ((hashes.mut0() as *mut u64).offset(idx & 7),
+        //         //  (keys.mut0()   as *mut  K ).offset(idx & 7),
+        //         //  (vals.mut0()   as *mut  V ).offset(idx & 7))
+        //         let idx = idx as uint;
+        //         let base = self.chunks.as_mut_ptr() as *mut u8;
+        //         let chk: uint = size_of::<TriAry<K, V>>() >> LOG2_CHUNK;
+        //         let k = size_of::<K>() as int;
+        //         let v = size_of::<V>() as int;
+        //         // let koff = base.offset((chk * idx) as int + (idx & 7) as int * (k - chk as int) + 64)
+        //         let hr = base.offset((chk * idx) as int + (idx & CHUNK_MASK) as int * (CHUNK as int - chk as int));
+        //         let kr = base.offset((chk * idx) as int + (idx & CHUNK_MASK) as int * (k - chk as int) + 64);
+        //         let vr = base.offset((chk * idx) as int + (idx & CHUNK_MASK) as int * (v - chk as int) + 64 + (k << LOG2_CHUNK));
+        //         (hr as *mut u64, kr as *mut K, vr as *mut V)
+        //     }
+        // }
 
         /// Gets references to the key and value at a given index.
         pub fn read<'a>(&'a self, index: &FullIndex) -> (&'a K, &'a V) {
             let idx = index.idx as uint;
 
             unsafe {
-                let &(ref hashes, ref keys, ref vals) = &*self.chunks.as_ptr().offset((idx >> 3) as int);
-                debug_assert!(hashes[idx & 7] != EMPTY_BUCKET);
+                let &(ref hashes, ref keys, ref vals) = &*self.chunks.as_ptr().offset((idx >> LOG2_CHUNK) as int);
+                debug_assert!(hashes[idx & CHUNK_MASK] != EMPTY_BUCKET);
                 // (&'a *(keys.ref0() as *K).offset(idx & 7),
                  // &'a *(vals.ref0() as *V).offset(idx & 7))
-                (&'a keys[idx & 7],
-                 &'a vals[idx & 7])
+                (&'a keys[idx & CHUNK_MASK],
+                 &'a vals[idx & CHUNK_MASK])
 
             }
         }
@@ -427,31 +415,17 @@ mod table {
             let idx = index.idx as uint;
 
             unsafe {
-            let &(ref hashes, ref mut keys, ref mut vals) = &mut *self.chunks.as_mut_ptr().offset((idx >> 3) as int);
-                debug_assert!(hashes[idx & 7] != EMPTY_BUCKET);
+            let &(ref hashes, ref mut keys, ref mut vals) = &mut *self.chunks.as_mut_ptr().offset((idx >> LOG2_CHUNK) as int);
+                debug_assert!(hashes[idx & CHUNK_MASK] != EMPTY_BUCKET);
                 // (&'a     *(keys.mut0() as *mut K).offset(idx & 7),
                  // &'a mut *(vals.mut0() as *mut V).offset(idx & 7))
-                (&'a keys[idx & 7],
-                 &'a mut vals[idx & 7])
-            }
-        }
-
-        /// Read everything, mutably.
-        pub fn read_all_mut<'a>(&'a mut self, index: &FullIndex)
-            -> (&'a mut SafeHash, &'a mut K, &'a mut V) {
-            let idx = index.idx as uint;
-
-            unsafe {
-                let &(ref mut hashes, ref mut keys, ref mut vals) = &mut *self.chunks.as_mut_ptr().offset((idx >> 3) as int);
-                debug_assert!(hashes[idx & 7] != EMPTY_BUCKET);
-                (transmute(&hashes[idx & 7]),
-                 &'a mut keys[idx & 7],
-                 &'a mut vals[idx & 7])
+                (&'a keys[idx & CHUNK_MASK],
+                 &'a mut vals[idx & CHUNK_MASK])
             }
         }
 
         unsafe fn get_chunk(&mut self, idx: uint) -> &mut TriAry<K, V> {
-            &mut *self.chunks.as_mut_ptr().offset((idx >> 3) as int)
+            &mut *self.chunks.as_mut_ptr().offset((idx >> LOG2_CHUNK) as int)
         }
 
         /// Read everything, mutably.
@@ -462,12 +436,12 @@ mod table {
 
             if empty {
                 // put into empty
-                debug_assert_eq!(hshs[idx & 7], EMPTY_BUCKET);
+                debug_assert_eq!(hshs[idx & CHUNK_MASK], EMPTY_BUCKET);
             }
             MutSafeIdx { 
-                h: &'a mut hshs[idx & 7],
-                k: &'a mut keys[idx & 7],
-                v: &'a mut vals[idx & 7]
+                h: &'a mut hshs[idx & CHUNK_MASK],
+                k: &'a mut keys[idx & CHUNK_MASK],
+                v: &'a mut vals[idx & CHUNK_MASK]
             }
         }
 
@@ -558,6 +532,7 @@ mod table {
 
         /// The hashtable's capacity, similar to a vector's.
         pub fn capacity(&self) -> uint {
+            #![inline]
             self.chunks.len() << LOG2_CHUNK
         }
 
@@ -701,7 +676,7 @@ mod table {
         ptr: *mut TriAry<K, V>,
         key: *mut TriAry<K, V>,
         val: *mut TriAry<K, V>,
-        start: *mut TriAry<K, V>,
+        cap: uint,
         marker: marker::ContravariantLifetime<'a>,
         // marker2: marker::NoCopy
     }
@@ -711,12 +686,12 @@ mod table {
     }
 
     impl<'a, K, V> TriArysCycle<'a, K, V> {
-        pub fn new(slice: &'a mut [TriAry<K, V>], off: uint) -> TriArysCycle<'a, K, V> {
+        pub fn new(slice: &'a mut [TriAry<K, V>], cap: uint) -> TriArysCycle<'a, K, V> {
             let len = slice.len();
             unsafe {
-                let ptr = slice.as_mut_ptr().offset(off as int);
+                let ptr = slice.as_mut_ptr();//.offset(off as int);
                 TriArysCycle {
-                    start: slice.as_mut_ptr(),
+                    cap: cap,
                     ptr: ptr,
                     end: slice.as_mut_ptr().offset(len as int),
                     key: (*ptr).mut1() as *mut [K, ..CHUNK] as *mut TriAry<K, V>,
@@ -726,22 +701,23 @@ mod table {
                 }
             }
         }
-    }
+    // }
 
-    impl<'a, K, V> Iterator<MutTriVecEntries<'a, K, V>> for TriArysCycle<'a, K, V> {
-        fn next(&mut self) -> Option<MutTriVecEntries<K, V>> {
+    // impl<'a, K, V> Iterator<MutTriVecEntries<'a, K, V>> for TriArysCycle<'a, K, V> {
+        pub fn get(&mut self) -> MutTriVecEntries<K, V> {
             if self.ptr == self.end {
-                self.ptr = self.start;
+                let off = -(self.cap as int);
                 unsafe {
-                    self.key = (*self.start).mut1() as *mut [K, ..CHUNK] as *mut TriAry<K, V>;
-                    self.val = (*self.start).mut2() as *mut [V, ..CHUNK] as *mut TriAry<K, V>;
+                    self.ptr = self.ptr.offset(off);
+                    self.key = self.key.offset(off);
+                    self.val = self.val.offset(off);
                 }
             }
 
             unsafe {
                 // align issue?
                 let next_ptr = self.ptr.offset(1);
-                let r = MutTriVecEntries {
+                let ret = MutTriVecEntries {
                     ptr: self.ptr as *mut u64,
                     keys: self.key as *mut K,
                     vals: self.val as *mut V,
@@ -753,7 +729,7 @@ mod table {
                 self.ptr = next_ptr;
                 self.key = self.key.offset(1);
                 self.val = self.val.offset(1);
-                Some(r)
+                ret
             }
         }
     }
@@ -876,19 +852,19 @@ mod table {
                 for i in range(0, self.capacity()) {
                     match self.peek(i) {
                         Empty(_)  => {
-                            let &(ref mut hashes, _, _) = new_ht.chunks.get_mut(i >> 3);
-                            hashes[i & 7] = EMPTY_BUCKET;
+                            let &(ref mut hashes, _, _) = new_ht.chunks.get_mut(i >> LOG2_CHUNK);
+                            hashes[i & CHUNK_MASK] = EMPTY_BUCKET;
                         },
                         Full(idx) => {
                             let hash = idx.hash().inspect();
                             let (k, v) = self.read(&idx);
 
-                            let &(ref mut hashes, ref mut keys, ref mut vals) = new_ht.chunks.get_mut(i >> 3);
+                            let &(ref mut hashes, ref mut keys, ref mut vals) = new_ht.chunks.get_mut(i >> LOG2_CHUNK);
                             hashes[i] = hash;
                 // let keys = (new_ht.hashes as *mut u8).offset(new_ht.keys() as int) as *mut K;
                 // let vals = (new_ht.hashes as *mut u8).offset(new_ht.vals() as int) as *mut V;
-                            overwrite(&mut keys[i & 7], (*k).clone());
-                            overwrite(&mut vals[i & 7], (*v).clone());
+                            overwrite(&mut keys[i & CHUNK_MASK], (*k).clone());
+                            overwrite(&mut vals[i & CHUNK_MASK], (*v).clone());
                         }
                     }
                 }
@@ -1360,11 +1336,11 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
 
         let full_skipped = (hash.inspect() as uint) & (cap - 1);
         let to_skip = hash.inspect() as uint & table::CHUNK_MASK;
-        let num_skipped = full_skipped >> 3;
+        let num_skipped = full_skipped >> table::LOG2_CHUNK;
         // let (skipped, first) = self.table.chunks.mut_split_at(num_skipped);
         // let (one, first_tail) = first.mut_split_at(1);
 
-        let mut items = table::TriArysCycle::new(self.table.chunks.as_mut_slice(), num_skipped + 1);
+        let mut items = table::TriArysCycle::new(self.table.chunks.mut_slice_from(num_skipped + 1), cap >> table::LOG2_CHUNK);
         // let mut items = table::TriAryIter::new(first_tail).chain(table::TriAryIter::new(skipped));
         // let mut items = it_items.cycle().skip(num_skipped+1);
         // items.next();
@@ -1377,7 +1353,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
             let (hsh, key, val) = match triples.next() {
                 Some(t) => t,
                 None => {
-                    triples = items.next().unwrap();
+                    triples = items.get();
                     triples.next().unwrap()
                 }
             };
@@ -1431,7 +1407,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
                                     let (hsh, key, val) = match triples_clone.next() {
                                         Some(t) => t,
                                         None => {
-                                            triples_clone = items_clone.next().unwrap();
+                                            triples_clone = items_clone.get();
                                             triples_clone.next().unwrap()
                                         }
                                     };
@@ -1563,15 +1539,12 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         assert!(self.table.size() <= new_capacity);
         assert!(num::is_power_of_two(new_capacity));
 
-        println!("{}", self);
         let old_table = replace(&mut self.table, table::RawTable::new(new_capacity));
         let old_size  = old_table.size();
 
         for (h, k, v) in old_table.move_iter() {
             self.insert_hashed_nocheck(h, k, v);
         }
-
-        println!("{}", self);
 
         assert_eq!(self.table.size(), old_size);
     }
@@ -1641,12 +1614,12 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
             // assert!(num::is_power_of_two(new_capacity));
             let keep_len = self.table.size;
             unsafe {
-                let mut chunk_iter = self.table.chunks.mut_slice_from(new_capacity >> 3).mut_iter().flat_map(|chunk_ref| {
+                let mut chunk_iter = self.table.chunks.mut_slice_from(new_capacity >> table::LOG2_CHUNK).mut_iter().flat_map(|chunk_ref| {
                     table::mut_iter(chunk_ref)
                 });
                 let unsfptr = unsafe{self as *mut HashMap<K, V, H>};
                 let t = &mut(*unsfptr).table.chunks;
-                t.set_len(new_capacity >> 3);
+                t.set_len(new_capacity >> table::LOG2_CHUNK);
                 for (hsh, key, val) in chunk_iter {
                     match hsh {
                         &0u64 => {}
