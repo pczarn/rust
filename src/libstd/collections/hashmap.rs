@@ -17,8 +17,8 @@ use default::Default;
 use fmt::Show;
 use fmt;
 use hash::{Hash, Hasher, sip};
-use iter::{Iterator, FromIterator, FilterMap, Chain, Repeat, Zip, Extendable};
-use iter::{range, range_inclusive, range_step_inclusive, FromIterator};
+use iter::{Iterator, FromIterator, FilterMap, Chain, Repeat, Zip, Extendable, Cycle};
+use iter::{range, range_inclusive, range_step_inclusive, FromIterator, CloneableIterator};
 use iter;
 use slice::MutableVector;
 use mem::replace;
@@ -591,7 +591,7 @@ mod table {
             vals: valptr,
             end: unsafe { (this as *mut TriAry<K, V>).offset(1) } as *mut V, //align issue?
             marker: marker::ContravariantLifetime,
-            marker2: marker::NoCopy,
+            // marker2: marker::NoCopy,
         }
     }
 
@@ -606,7 +606,7 @@ mod table {
             vals: unsafe { valptr.offset(off) },
             end: unsafe { (this as *mut TriAry<K, V>).offset(1) } as *mut V, //align issue?
             marker: marker::ContravariantLifetime,
-            marker2: marker::NoCopy,
+            // marker2: marker::NoCopy,
         }
     }
 
@@ -616,7 +616,11 @@ mod table {
         vals: *mut V,
         end: *mut V,
         marker: marker::ContravariantLifetime<'a>,
-        marker2: marker::NoCopy
+        // marker2: marker::NoCopy
+    }
+
+    impl<'a, K, V> Clone for MutTriVecEntries<'a, K, V> {
+        fn clone(&self) -> MutTriVecEntries<'a, K, V> { *self }
     }
 
     impl<'a, K, V> Iterator<(&'a mut u64, &'a mut K, &'a mut V)> for MutTriVecEntries<'a, K, V> {
@@ -642,7 +646,11 @@ mod table {
         key: *mut TriAry<K, V>,
         val: *mut TriAry<K, V>,
         marker: marker::ContravariantLifetime<'a>,
-        marker2: marker::NoCopy
+        // marker2: marker::NoCopy
+    }
+
+    impl<'a, K, V> Clone for TriAryIter<'a, K, V> {
+        fn clone(&self) -> TriAryIter<'a, K, V> { *self }
     }
 
     impl<'a, K, V> TriAryIter<'a, K, V> {
@@ -656,7 +664,7 @@ mod table {
                     key: (*ptr).mut1() as *mut [K, ..CHUNK] as *mut TriAry<K, V>,
                     val: (*ptr).mut2() as *mut [V, ..CHUNK] as *mut TriAry<K, V>,
                     marker: marker::ContravariantLifetime,
-                    marker2: marker::NoCopy
+                    // marker2: marker::NoCopy
                 }
             }
         }
@@ -677,13 +685,75 @@ mod table {
                         end: next_ptr as *mut V,
                         // end: (self.ptr as *mut u64)
                         marker: marker::ContravariantLifetime,
-                        marker2: marker::NoCopy
+                        // marker2: marker::NoCopy
                     };
                     self.ptr = next_ptr;
                     self.key = self.key.offset(1);
                     self.val = self.val.offset(1);
                     Some(r)
                 }
+            }
+        }
+    }
+
+    pub struct TriArysCycle<'a, K, V> {
+        end: *mut TriAry<K, V>,
+        ptr: *mut TriAry<K, V>,
+        key: *mut TriAry<K, V>,
+        val: *mut TriAry<K, V>,
+        start: *mut TriAry<K, V>,
+        marker: marker::ContravariantLifetime<'a>,
+        // marker2: marker::NoCopy
+    }
+
+    impl<'a, K, V> Clone for TriArysCycle<'a, K, V> {
+        fn clone(&self) -> TriArysCycle<'a, K, V> { *self }
+    }
+
+    impl<'a, K, V> TriArysCycle<'a, K, V> {
+        pub fn new(slice: &'a mut [TriAry<K, V>], off: uint) -> TriArysCycle<'a, K, V> {
+            let len = slice.len();
+            unsafe {
+                let ptr = slice.as_mut_ptr().offset(off as int);
+                TriArysCycle {
+                    start: slice.as_mut_ptr(),
+                    ptr: ptr,
+                    end: ptr.offset(len as int),
+                    key: (*ptr).mut1() as *mut [K, ..CHUNK] as *mut TriAry<K, V>,
+                    val: (*ptr).mut2() as *mut [V, ..CHUNK] as *mut TriAry<K, V>,
+                    marker: marker::ContravariantLifetime,
+                    // marker2: marker::NoCopy
+                }
+            }
+        }
+    }
+
+    impl<'a, K, V> Iterator<MutTriVecEntries<'a, K, V>> for TriArysCycle<'a, K, V> {
+        fn next(&mut self) -> Option<MutTriVecEntries<K, V>> {
+            if self.ptr == self.end {
+                self.ptr = self.start;
+                unsafe {
+                    self.key = (*self.start).mut1() as *mut [K, ..CHUNK] as *mut TriAry<K, V>;
+                    self.val = (*self.start).mut2() as *mut [V, ..CHUNK] as *mut TriAry<K, V>;
+                }
+            }
+
+            unsafe {
+                // align issue?
+                let next_ptr = self.ptr.offset(1);
+                let r = MutTriVecEntries {
+                    ptr: self.ptr as *mut u64,
+                    keys: self.key as *mut K,
+                    vals: self.val as *mut V,
+                    end: next_ptr as *mut V,
+                    // end: (self.ptr as *mut u64)
+                    marker: marker::ContravariantLifetime,
+                    // marker2: marker::NoCopy
+                };
+                self.ptr = next_ptr;
+                self.key = self.key.offset(1);
+                self.val = self.val.offset(1);
+                Some(r)
             }
         }
     }
@@ -1291,13 +1361,17 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
         let full_skipped = (hash.inspect() as uint) & (cap - 1);
         let to_skip = hash.inspect() as uint & table::CHUNK_MASK;
         let num_skipped = full_skipped >> 3;
-        let (skipped, first) = self.table.chunks.mut_split_at(num_skipped);
-        let (one, first) = first.mut_split_at(1);
+        // let (skipped, first) = self.table.chunks.mut_split_at(num_skipped);
+        // let (one, first_tail) = first.mut_split_at(1);
 
-        let mut items = table::TriAryIter::new(first).chain(table::TriAryIter::new(skipped));
+        let mut items = table::TriArysCycle::new(self.table.chunks.as_mut_slice(), num_skipped + 1);
+        // let mut items = table::TriAryIter::new(first_tail).chain(table::TriAryIter::new(skipped));
+        // let mut items = it_items.cycle().skip(num_skipped+1);
+        // items.next();
 
         let mut triples = unsafe {
-            table::mut_iter_at(one.unsafe_mut_ref(0), to_skip)
+            // items.next();//.unwrap().skip(to_skip)
+            table::mut_iter_at((*unsfptr).table.chunks.as_mut_slice().unsafe_mut_ref(num_skipped), to_skip)
         };
 
         for (dib, idx) in range_inclusive(0u, size).zip(range(full_skipped, cap).chain(range(0u, cap))) {
@@ -1334,8 +1408,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
                     if full_hash == hash.inspect() && k == *key {
                         return Some(replace(val, v));
                     } else {
-                        let raw_index = idx;
-                        let probe_dib = bucket_dib(raw_index, full_hash, cap);
+                        let probe_dib = bucket_dib(idx, full_hash, cap);
                         if probe_dib < dib {
                             unsafe {
                                 // (*unsfptr).robin_hood(
@@ -1351,16 +1424,17 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
                   // mut hash: table::SafeHash, mut k: K, mut v: V) {
                             // let (mut hash_ref, mut key_ref, mut val_ref) = self.table.ptr_mut_idx(raw_index as int);
                             let (mut hash_ref, mut key_ref, mut val_ref) = (hsh, key, val);
-                            let (mut k, mut v) = (k, v);
-                            let mut index = raw_index;
-                            let mut dib_param: 
+                            let (mut hash, mut k, mut v) = (hash.inspect(), k, v);
+                            let mut index = idx;
+                            let mut dib_param = probe_dib;
+                            // let mut items = items.chain(table::TriAryIter::new(first));
 
         'outer: loop { unsafe {
             let (old_hash, old_key, old_val) = {
                 // let (old_hash_ref, old_key_ref, old_val_ref) =
                 //         self.table.read_all_mut(&index);
 
-                let old_hash = replace(hash_ref, hash.inspect());
+                let old_hash = replace(hash_ref, hash);
                 let old_key  = replace(key_ref,  k);
                 let old_val  = replace(val_ref,  v);
 
@@ -1368,20 +1442,22 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
             };
 
             // let mut probe = self.probe_next(index);
+            let mut items_clone = items.clone();
+            let mut triples_clone = triples.clone();
 
-            for dib in range(probe_dib + 1, size) {
+            for (dib, idx) in range(dib_param + 1, size).zip(range(index + 1, cap).chain(range(0u, cap))) {
                 // let (hr, kr, vr) = self.table.ptr_mut_idx(probe as int);
-                let (hsh, key, val) = match triples.next() {
+                let (hsh, key, val) = match triples_clone.next() {
                     Some(t) => t,
                     None => {
-                        triples = match items.next() {
+                        triples_clone = match items_clone.next() {
                             Some(it) => it,
                             None => {
-                                // items = table::TriAryIter::new(skipped);
+                                // items_clone = table::TriAryIter::new(skipped);
                                 fail!(format!("robin dib {} (0-{}) idx {}. cap {} full_skipped {}", dib, size, idx, cap, full_skipped))
                             }
                         };
-                        match triples.next() {
+                        match triples_clone.next() {
                             Some(t) => t,
                             None => fail!(format!("hood failed :( dib {} (0-{}) idx {}. cap {} full_skipped {}", dib, size, idx, cap, full_skipped))
                         }
@@ -1399,44 +1475,45 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
                 match hsh {
                     &0u64 => {
                         // Finally. A hole!
-                        *hsh = hash.inspect();
+                        *hsh = old_hash;
                         unsafe {
-                            overwrite(key, k);
-                            overwrite(val, v);
+                            overwrite(key, old_key);
+                            overwrite(val, old_val);
                             (*unsfptr).table.size = potential_new_size;
+                            println!("size {}", potential_new_size);
                             return None;
-                            // inclen = true;
-                            // break;
                         }
                     }
                     &full_hash => {
-                        let probe_dib = bucket_dib(index, full_hash, cap);
+                        let probe_dib = bucket_dib(idx, full_hash, cap);
+                        if probe_dib < dib {
+                            hash_ref = hsh;
+                            key_ref = key;
+                            val_ref = val;
+                            index = idx;
+                            dib_param = probe_dib;
+                            hash = old_hash;
+                            k = old_key;
+                            v = old_val;
+                            items = items_clone;
+                            triples = triples_clone;
+                            continue 'outer;
+                        }
                     }
                 }
 
-                let probe_dib = self.bucket_distance(&full_index);
+                // let probe_dib = self.bucket_distance(&full_index);
 
                 // Robin hood! Steal the spot.
-                if probe_dib < dib {
-                    hash_ref = hr;
-                    key_ref = kr;
-                    val_ref = vr;
-                    index = full_index;
-                    dib_param = probe_dib;
-                    hash = old_hash;
-                    k = old_key;
-                    v = old_val;
-                    continue 'outer;
-                }
 
-                probe = self.probe_next(probe);
+                // probe = self.probe_next(probe);
             }
 
             // println!("{} {} {}", index.raw_index(), dib_param, hash.inspect());
             fail!("HashMap fatal error: 100% load factor?");
         }}
                             }
-                            return None;
+                            // return None;
                         }
                     }
                 }
@@ -1530,12 +1607,15 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         assert!(self.table.size() <= new_capacity);
         assert!(num::is_power_of_two(new_capacity));
 
+        println!("{}", self);
         let old_table = replace(&mut self.table, table::RawTable::new(new_capacity));
         let old_size  = old_table.size();
 
         for (h, k, v) in old_table.move_iter() {
             self.insert_hashed_nocheck(h, k, v);
         }
+
+        println!("{}", self);
 
         assert_eq!(self.table.size(), old_size);
     }
@@ -1932,15 +2012,27 @@ impl<K: Eq + Hash<S>, V: PartialEq, S, H: Hasher<S>> PartialEq for HashMap<K, V,
     }
 }
 
-impl<K: Eq + Hash<S>, V: Eq, S, H: Hasher<S>> Eq for HashMap<K, V, H> {}
+// impl<K: Eq + Hash<S> + Show, V: Show, S, H: Hasher<S>> Show for HashMap<K, V, H> {
+//     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+//         try!(write!(f, r"\{"));
 
-impl<K: Eq + Hash<S> + Show, V: Show, S, H: Hasher<S>> Show for HashMap<K, V, H> {
+//         for (i, (k, v)) in self.iter().enumerate() {
+//             if i != 0 { try!(write!(f, ", ")); }
+//             try!(write!(f, "{}: {}", *k, *v));
+//         }
+
+//         write!(f, r"\}")
+//     }
+// }
+
+//debug
+impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> Show for HashMap<K, V, H> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         try!(write!(f, "{{"));
 
         for (i, (k, v)) in self.iter().enumerate() {
             if i != 0 { try!(write!(f, ", ")); }
-            try!(write!(f, "{}: {}", *k, *v));
+            try!(write!(f, "{:?}: {:?}", *k, *v));
         }
 
         write!(f, "}}")
