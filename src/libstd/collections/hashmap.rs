@@ -1410,110 +1410,86 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
                     } else {
                         let probe_dib = bucket_dib(idx, full_hash, cap);
                         if probe_dib < dib {
-                            unsafe {
-                                // (*unsfptr).robin_hood(
-                                //     table::FullIndex {
-                                //         idx:raw_index as int,
-                                //         hash:table::SafeHash{
-                                //             hash:full_hash
-                                //         },
-                                //         nocopy:marker::NoCopy
-                                //     },
-                                //     probe_dib, hash, k, v);
-    // fn robin_hood(&mut self, mut index: table::FullIndex, mut dib_param: uint,
-                  // mut hash: table::SafeHash, mut k: K, mut v: V) {
-                            // let (mut hash_ref, mut key_ref, mut val_ref) = self.table.ptr_mut_idx(raw_index as int);
+                            // ----- ROBIN HOOD
+                            // unsafe { (*unsfptr).robin_hood(
+                            //     table::FullIndex {
+                            //         idx:idx as int,
+                            //         hash:table::SafeHash{
+                            //             hash:full_hash
+                            //         },
+                            //         nocopy:marker::NoCopy
+                            //     },
+                            //     probe_dib, hash, k, v);
+                            // }
+                            // return None;
+                            // ----- ROBIN HOOD
                             let (mut hash_ref, mut key_ref, mut val_ref) = (hsh, key, val);
                             let (mut hash, mut k, mut v) = (hash.inspect(), k, v);
                             let mut index = idx;
                             let mut dib_param = probe_dib;
-                            // let mut items = items.chain(table::TriAryIter::new(first));
+                            'outer: loop {
+                                let (old_hash, old_key, old_val) = {
+                                    let old_hash = replace(hash_ref, hash);
+                                    let old_key  = replace(key_ref,  k);
+                                    let old_val  = replace(val_ref,  v);
 
-        'outer: loop { unsafe {
-            let (old_hash, old_key, old_val) = {
-                // let (old_hash_ref, old_key_ref, old_val_ref) =
-                //         self.table.read_all_mut(&index);
+                                    (old_hash, old_key, old_val)
+                                };
 
-                let old_hash = replace(hash_ref, hash);
-                let old_key  = replace(key_ref,  k);
-                let old_val  = replace(val_ref,  v);
+                                let mut items_clone = items.clone();
+                                let mut triples_clone = triples.clone();
 
-                (old_hash, old_key, old_val)
-            };
+                                for (dib, idx) in range(dib_param + 1, size).zip(range(index + 1, cap).chain(range(0u, cap))) {
+                                    let (hsh, key, val) = match triples_clone.next() {
+                                        Some(t) => t,
+                                        None => {
+                                            triples_clone = match items_clone.next() {
+                                                Some(it) => it,
+                                                None => {
+                                                    fail!(format!("robin dib {} (0-{}) idx {}. cap {} full_skipped {}", dib, size, idx, cap, full_skipped))
+                                                }
+                                            };
+                                            match triples_clone.next() {
+                                                Some(t) => t,
+                                                None => fail!(format!("hood failed :( dib {} (0-{}) idx {}. cap {} full_skipped {}", dib, size, idx, cap, full_skipped))
+                                            }
+                                        }
+                                    };
 
-            // let mut probe = self.probe_next(index);
-            let mut items_clone = items.clone();
-            let mut triples_clone = triples.clone();
+                                    match hsh {
+                                        &0u64 => {
+                                            // Finally. A hole!
+                                            *hsh = old_hash;
+                                            unsafe {
+                                                overwrite(key, old_key);
+                                                overwrite(val, old_val);
+                                                (*unsfptr).table.size = potential_new_size;
+                                                // println!("size {}", potential_new_size);
+                                                return None;
+                                            }
+                                        }
+                                        &full_hash => {
+                                            let probe_dib = bucket_dib(idx, full_hash, cap);
+                                            if probe_dib < dib {
+                                                hash_ref = hsh;
+                                                key_ref = key;
+                                                val_ref = val;
+                                                index = idx;
+                                                dib_param = probe_dib;
+                                                hash = old_hash;
+                                                k = old_key;
+                                                v = old_val;
+                                                items = items_clone;
+                                                triples = triples_clone;
+                                                continue 'outer;
+                                            }
+                                        }
+                                    }
+                                }
 
-            for (dib, idx) in range(dib_param + 1, size).zip(range(index + 1, cap).chain(range(0u, cap))) {
-                // let (hr, kr, vr) = self.table.ptr_mut_idx(probe as int);
-                let (hsh, key, val) = match triples_clone.next() {
-                    Some(t) => t,
-                    None => {
-                        triples_clone = match items_clone.next() {
-                            Some(it) => it,
-                            None => {
-                                // items_clone = table::TriAryIter::new(skipped);
-                                fail!(format!("robin dib {} (0-{}) idx {}. cap {} full_skipped {}", dib, size, idx, cap, full_skipped))
+                                fail!("HashMap fatal error: 100% load factor?");
                             }
-                        };
-                        match triples_clone.next() {
-                            Some(t) => t,
-                            None => fail!(format!("hood failed :( dib {} (0-{}) idx {}. cap {} full_skipped {}", dib, size, idx, cap, full_skipped))
-                        }
-                    }
-                };
-
-                // let full_index = match self.table.internal_peek(probe, *hr) {
-                //     table::Empty(idx) => {
-                //         // Finally. A hole!
-                //         self.table.put(idx, old_hash, old_key, old_val);
-                //         return;
-                //     },
-                //     table::Full(idx) => idx
-                // };
-                match hsh {
-                    &0u64 => {
-                        // Finally. A hole!
-                        *hsh = old_hash;
-                        unsafe {
-                            overwrite(key, old_key);
-                            overwrite(val, old_val);
-                            (*unsfptr).table.size = potential_new_size;
-                            println!("size {}", potential_new_size);
-                            return None;
-                        }
-                    }
-                    &full_hash => {
-                        let probe_dib = bucket_dib(idx, full_hash, cap);
-                        if probe_dib < dib {
-                            hash_ref = hsh;
-                            key_ref = key;
-                            val_ref = val;
-                            index = idx;
-                            dib_param = probe_dib;
-                            hash = old_hash;
-                            k = old_key;
-                            v = old_val;
-                            items = items_clone;
-                            triples = triples_clone;
-                            continue 'outer;
-                        }
-                    }
-                }
-
-                // let probe_dib = self.bucket_distance(&full_index);
-
-                // Robin hood! Steal the spot.
-
-                // probe = self.probe_next(probe);
-            }
-
-            // println!("{} {} {}", index.raw_index(), dib_param, hash.inspect());
-            fail!("HashMap fatal error: 100% load factor?");
-        }}
-                            }
-                            // return None;
+                            // ----- ROBIN HOOD
                         }
                     }
                 }
