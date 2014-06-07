@@ -718,7 +718,7 @@ mod table {
                 TriArysCycle {
                     start: slice.as_mut_ptr(),
                     ptr: ptr,
-                    end: ptr.offset(len as int),
+                    end: slice.as_mut_ptr().offset(len as int),
                     key: (*ptr).mut1() as *mut [K, ..CHUNK] as *mut TriAry<K, V>,
                     val: (*ptr).mut2() as *mut [V, ..CHUNK] as *mut TriAry<K, V>,
                     marker: marker::ContravariantLifetime,
