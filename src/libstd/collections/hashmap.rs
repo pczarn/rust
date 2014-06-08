@@ -1277,6 +1277,69 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
 
         self.pop_internal(starting_index)
     }
+
+    fn swap_hashed_no_grow(&mut self, hash: table::SafeHash, k: K, v: V) -> (&mut V, Option<V>) {
+        let potential_new_size = self.table.size() + 1;
+
+        let unsfptr = self as *mut HashMap<K, V, H>;
+        let size = self.table.size();
+        let cap = self.table.capacity();
+
+        let full_skipped = (hash.inspect() as uint) & (cap - 1);
+        let to_skip = full_skipped & table::CHUNK_MASK;
+        let num_skipped = full_skipped >> table::LOG2_CHUNK;
+
+        let mut items = table::TriArysCycle::new(self.table.chunks.mut_slice_from(num_skipped + 1), cap >> table::LOG2_CHUNK);
+
+        let mut triples = unsafe {
+            table::mut_iter_at((*unsfptr).table.chunks.as_mut_slice().unsafe_mut_ref(num_skipped), to_skip)
+        };
+
+        for (dib, idx) in range_inclusive(0u, size).zip(range(full_skipped, cap).chain(range(0u, cap))) {
+            let (hsh, key, val) = match triples.next() {
+                Some(t) => t,
+                None => {
+                    triples = items.get();
+                    triples.next().unwrap()
+                }
+            };
+
+            match hsh {
+                &0u64 => {
+                    *hsh = hash.inspect();
+                    unsafe {
+                        overwrite(key, k);
+                        overwrite(val, v);
+                        (*unsfptr).table.size = potential_new_size;
+                        return (val, None);
+                    }
+                }
+                &full_hash => {
+                    if full_hash == hash.inspect() && k == *key {
+                        // slowing down?? use closure?
+                        return (val, Some(v));
+                    } else {
+                        let probe_dib = bucket_dib(idx, full_hash, cap);
+                        if probe_dib < dib {
+                            let bval: *mut V = val;
+                            // ----- ROBIN HOOD
+                            do_robin_hood(hsh, key, val,
+                                full_hash, k, v, idx, probe_dib,
+                                &mut items, &mut triples, size, cap);
+
+                            unsafe {
+                                (*unsfptr).table.size = potential_new_size;
+                            }
+                            return (unsafe {&mut(*bval)}, None);
+                            // ----- ROBIN HOOD
+                        }
+                    }
+                }
+            }
+        }
+        // We really shouldn't be here.
+        fail!("Internal HashMap error: Out of space.");
+    }
 }
 
 impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> Collection for HashMap<K, V, H> {
@@ -1314,6 +1377,68 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> Map<K, V> for HashMap<K, V, H> {
     }
 }
 
+fn do_robin_hood<'a, K, V>(mut hash_ref: &'a mut u64, mut key_ref: &'a mut K, mut val_ref: &'a mut V,
+    mut hash: u64, mut k: K, mut v: V, mut index: uint, mut dib_param: uint,
+    items: &mut table::TriArysCycle<K, V>, triples: &mut table::MutTriVecEntries<'a, K, V>, size: uint, cap: uint) {
+    #![inline(always)] //won't work
+    // let (mut hash_ref, mut key_ref, mut val_ref) = (hsh, key, val);
+    // let (mut hash, mut k, mut v) = (hash.inspect(), k, v);
+    // let mut index = idx;
+    // let mut dib_param = probe_dib;
+    'outer: loop {
+        let (old_hash, old_key, old_val) = {
+            let old_hash = replace(hash_ref, hash);
+            let old_key  = replace(key_ref,  k);
+            let old_val  = replace(val_ref,  v);
+
+            (old_hash, old_key, old_val)
+        };
+
+        let mut items_clone = items.clone();
+        let mut triples_clone = triples.clone();
+
+        for (dib, idx) in range(dib_param + 1, size).zip(range(index + 1, cap).chain(range(0u, cap))) {
+            let (hsh, key, val) = match triples_clone.next() {
+                Some(t) => t,
+                None => {
+                    triples_clone = items_clone.get();
+                    triples_clone.next().unwrap()
+                }
+            };
+
+            match hsh {
+                &0u64 => {
+                    // Finally. A hole!
+                    *hsh = old_hash;
+                    unsafe {
+                        overwrite(key, old_key);
+                        overwrite(val, old_val);
+                        return;
+                    }
+                }
+                &full_hash => {
+                    let probe_dib = bucket_dib(idx, full_hash, cap);
+                    if probe_dib < dib {
+                        hash_ref = hsh;
+                        key_ref = key;
+                        val_ref = val;
+                        index = idx;
+                        dib_param = probe_dib;
+                        hash = old_hash;
+                        k = old_key;
+                        v = old_val;
+                        *items = items_clone;
+                        *triples = triples_clone;
+                        continue 'outer;
+                    }
+                }
+            }
+        }
+
+        fail!("HashMap fatal error: 100% load factor?");
+    }
+}
+
 impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> {
     fn find_mut<'a>(&'a mut self, k: &K) -> Option<&'a mut V> {
         match self.search(k) {
@@ -1330,129 +1455,8 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
         let potential_new_size = self.table.size() + 1;
         self.make_some_room(potential_new_size);
 
-        let unsfptr = self as *mut HashMap<K, V, H>;
-        let size = self.table.size();
-        let cap = self.table.capacity();
-
-        let full_skipped = (hash.inspect() as uint) & (cap - 1);
-        let to_skip = hash.inspect() as uint & table::CHUNK_MASK;
-        let num_skipped = full_skipped >> table::LOG2_CHUNK;
-        // let (skipped, first) = self.table.chunks.mut_split_at(num_skipped);
-        // let (one, first_tail) = first.mut_split_at(1);
-
-        let mut items = table::TriArysCycle::new(self.table.chunks.mut_slice_from(num_skipped + 1), cap >> table::LOG2_CHUNK);
-        // let mut items = table::TriAryIter::new(first_tail).chain(table::TriAryIter::new(skipped));
-        // let mut items = it_items.cycle().skip(num_skipped+1);
-        // items.next();
-
-        let mut triples = unsafe {
-            table::mut_iter_at((*unsfptr).table.chunks.as_mut_slice().unsafe_mut_ref(num_skipped), to_skip)
-        };
-
-        for (dib, idx) in range_inclusive(0u, size).zip(range(full_skipped, cap).chain(range(0u, cap))) {
-            let (hsh, key, val) = match triples.next() {
-                Some(t) => t,
-                None => {
-                    triples = items.get();
-                    triples.next().unwrap()
-                }
-            };
-
-            match hsh {
-                &0u64 => {
-                    *hsh = hash.inspect();
-                    unsafe {
-                        overwrite(key, k);
-                        overwrite(val, v);
-                        (*unsfptr).table.size = potential_new_size;
-                        return None;
-                    }
-                }
-                &full_hash => {
-                    if full_hash == hash.inspect() && k == *key {
-                        return Some(replace(val, v));
-                    } else {
-                        let probe_dib = bucket_dib(idx, full_hash, cap);
-                        if probe_dib < dib {
-                            // ----- ROBIN HOOD
-                            // unsafe { (*unsfptr).robin_hood(
-                            //     table::FullIndex {
-                            //         idx:idx as int,
-                            //         hash:table::SafeHash{
-                            //             hash:full_hash
-                            //         },
-                            //         nocopy:marker::NoCopy
-                            //     },
-                            //     probe_dib, hash, k, v);
-                            // }
-                            // return None;
-                            // ----- ROBIN HOOD
-                            let (mut hash_ref, mut key_ref, mut val_ref) = (hsh, key, val);
-                            let (mut hash, mut k, mut v) = (hash.inspect(), k, v);
-                            let mut index = idx;
-                            let mut dib_param = probe_dib;
-                            'outer: loop {
-                                let (old_hash, old_key, old_val) = {
-                                    let old_hash = replace(hash_ref, hash);
-                                    let old_key  = replace(key_ref,  k);
-                                    let old_val  = replace(val_ref,  v);
-
-                                    (old_hash, old_key, old_val)
-                                };
-
-                                let mut items_clone = items.clone();
-                                let mut triples_clone = triples.clone();
-
-                                for (dib, idx) in range(dib_param + 1, size).zip(range(index + 1, cap).chain(range(0u, cap))) {
-                                    let (hsh, key, val) = match triples_clone.next() {
-                                        Some(t) => t,
-                                        None => {
-                                            triples_clone = items_clone.get();
-                                            triples_clone.next().unwrap()
-                                        }
-                                    };
-
-                                    match hsh {
-                                        &0u64 => {
-                                            // Finally. A hole!
-                                            *hsh = old_hash;
-                                            unsafe {
-                                                overwrite(key, old_key);
-                                                overwrite(val, old_val);
-                                                (*unsfptr).table.size = potential_new_size;
-                                                // println!("size {}", potential_new_size);
-                                                return None;
-                                            }
-                                        }
-                                        &full_hash => {
-                                            let probe_dib = bucket_dib(idx, full_hash, cap);
-                                            if probe_dib < dib {
-                                                hash_ref = hsh;
-                                                key_ref = key;
-                                                val_ref = val;
-                                                index = idx;
-                                                dib_param = probe_dib;
-                                                hash = old_hash;
-                                                k = old_key;
-                                                v = old_val;
-                                                items = items_clone;
-                                                triples = triples_clone;
-                                                continue 'outer;
-                                            }
-                                        }
-                                    }
-                                }
-
-                                fail!("HashMap fatal error: 100% load factor?");
-                            }
-                            // ----- ROBIN HOOD
-                        }
-                    }
-                }
-            }
-        }
-        // We really shouldn't be here.
-        fail!("Internal HashMap error: Out of space.");
+        let (val_ref, maybe_val) = self.swap_hashed_no_grow(hash, k, v);
+        maybe_val.map(|val| replace(val_ref, val))
     }
 
     fn pop(&mut self, k: &K) -> Option<V> {
@@ -1543,7 +1547,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         let old_size  = old_table.size();
 
         for (h, k, v) in old_table.move_iter() {
-            self.insert_hashed_nocheck(h, k, v);
+            self.swap_hashed_no_grow(h, k, v);
         }
 
         assert_eq!(self.table.size(), old_size);
@@ -1580,12 +1584,13 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                         match (*hsh) as uint & cap {
                             0u => {} // empty or in place
                             cap => {
+                                // Put it where it would have been
                                 let k = ptr::read(key as *mut K as *K);
                                 let v = ptr::read(val as *mut V as *V);
 
                                 let hash = *hsh;
                                 *hsh = 0u64;
-                                (*unsfptr).insert_hashed_nocheck(table::SafeHash{hash:hash}, k, v);
+                                (*unsfptr).swap_hashed_no_grow(table::SafeHash{hash:hash}, k, v);
                             }
                         }
                     }
@@ -1598,9 +1603,6 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
             self.table.size = keep_len;
         } else if shrink_at <= cap {
             let new_capacity = cap >> 1;
-            // self.resize(new_capacity);
-            // TODO faster shrink!
-            // assert!(num::is_power_of_two(new_capacity));
             let keep_len = self.table.size;
             unsafe {
                 let mut items = table::TriAryIter::new(self.table.chunks.mut_slice_from(new_capacity >> table::LOG2_CHUNK));
@@ -1615,7 +1617,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                             &full_hash => {
                                 let k = ptr::read(key as *mut K as *K);
                                 let v = ptr::read(val as *mut V as *V);
-                                (*unsfptr).insert_hashed_nocheck(table::SafeHash{hash:full_hash}, k, v);
+                                (*unsfptr).swap_hashed_no_grow(table::SafeHash{hash:full_hash}, k, v);
                                 *hsh = 0u64;
                             }
                         }
@@ -1693,54 +1695,117 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
     ///
     /// If the key already exists, the hashtable will be returned untouched
     /// and a reference to the existing element will be returned.
-    fn insert_hashed_nocheck<'a>(
-        &'a mut self, hash: table::SafeHash, k: K, v: V) -> &'a mut V {
+    // fn insert_hashed_nocheckx<'a>(
+    //     &'a mut self, hash: table::SafeHash, k: K, v: V) -> &'a mut V {
 
-        for dib in range_inclusive(0u, self.table.size()) {
-            let probe = self.probe(&hash, dib);
+    //     for dib in range_inclusive(0u, self.table.size()) {
+    //         let probe = self.probe(&hash, dib);
 
-            let idx = match self.table.peek(probe) {
-                table::Empty(idx) => {
-                    // Found a hole!
-                    let fullidx  = self.table.put(idx, hash, k, v);
-                    let (_, val) = self.table.read_mut(&fullidx);
-                    return val;
-                },
-                table::Full(idx) => idx
-            };
+    //         let idx = match self.table.peek(probe) {
+    //             table::Empty(idx) => {
+    //                 // Found a hole!
+    //                 let fullidx  = self.table.put(idx, hash, k, v);
+    //                 let (_, val) = self.table.read_mut(&fullidx);
+    //                 return val;
+    //             },
+    //             table::Full(idx) => idx
+    //         };
 
-            if idx.hash() == hash {
-                let (bucket_k, bucket_v) = self.table.read_mut(&idx);
-                // FIXME #12147 the conditional return confuses
-                // borrowck if we return bucket_v directly
-                let bv: *mut V = bucket_v;
-                if k == *bucket_k {
-                    // Key already exists. Get its reference.
-                    return unsafe {&mut *bv};
-                }
-            }
+    //         if idx.hash() == hash {
+    //             let (bucket_k, bucket_v) = self.table.read_mut(&idx);
+    //             // FIXME #12147 the conditional return confuses
+    //             // borrowck if we return bucket_v directly
+    //             let bv: *mut V = bucket_v;
+    //             if k == *bucket_k {
+    //                 // Key already exists. Get its reference.
+    //                 return unsafe {&mut *bv};
+    //             }
+    //         }
 
-            let probe_dib = self.bucket_distance(&idx);
+    //         let probe_dib = self.bucket_distance(&idx);
 
-            if  probe_dib < dib {
-                // Found a luckier bucket than me. Better steal his spot.
-                self.robin_hood(idx, probe_dib, hash, k, v);
+    //         if  probe_dib < dib {
+    //             // Found a luckier bucket than me. Better steal his spot.
+    //             self.robin_hood(idx, probe_dib, hash, k, v);
 
-                // Now that it's stolen, just read the value's pointer
-                // right out of the table!
-                match self.table.peek(probe) {
-                    table::Empty(_)  => fail!("Just stole a spot, but now that spot's empty."),
-                    table::Full(idx) => {
-                        let (_, v) = self.table.read_mut(&idx);
-                        return v;
-                    }
-                }
-            }
-        }
+    //             // Now that it's stolen, just read the value's pointer
+    //             // right out of the table!
+    //             match self.table.peek(probe) {
+    //                 table::Empty(_)  => fail!("Just stole a spot, but now that spot's empty."),
+    //                 table::Full(idx) => {
+    //                     let (_, v) = self.table.read_mut(&idx);
+    //                     return v;
+    //                 }
+    //             }
+    //         }
+    //     }
 
-        // We really shouldn't be here.
-        fail!("Internal HashMap error: Out of space.");
-    }
+    //     // We really shouldn't be here.
+    //     fail!("Internal HashMap error: Out of space.");
+    // }
+
+    // fn insert_hashed_nocheck<'a>(
+    //     &'a mut self, hash: table::SafeHash, k: K, v: V) -> &'a mut V {
+    //     let potential_new_size = self.table.size() + 1;
+
+    //     let unsfptr = self as *mut HashMap<K, V, H>;
+    //     let size = self.table.size();
+    //     let cap = self.table.capacity();
+
+    //     let full_skipped = (hash.inspect() as uint) & (cap - 1);
+    //     let to_skip = full_skipped & table::CHUNK_MASK;
+    //     let num_skipped = full_skipped >> table::LOG2_CHUNK;
+
+    //     let mut items = table::TriArysCycle::new(self.table.chunks.mut_slice_from(num_skipped + 1), cap >> table::LOG2_CHUNK);
+
+    //     let mut triples = unsafe {
+    //         table::mut_iter_at((*unsfptr).table.chunks.as_mut_slice().unsafe_mut_ref(num_skipped), to_skip)
+    //     };
+
+    //     for (dib, idx) in range_inclusive(0u, size).zip(range(full_skipped, cap).chain(range(0u, cap))) {
+    //         let (hsh, key, val) = match triples.next() {
+    //             Some(t) => t,
+    //             None => {
+    //                 triples = items.get();
+    //                 triples.next().unwrap()
+    //             }
+    //         };
+
+    //         match hsh {
+    //             &0u64 => {
+    //                 *hsh = hash.inspect();
+    //                 unsafe {
+    //                     overwrite(key, k);
+    //                     overwrite(val, v);
+    //                     (*unsfptr).table.size = potential_new_size;
+    //                     return val;
+    //                 }
+    //             }
+    //             &full_hash => {
+    //                 if full_hash == hash.inspect() && k == *key {
+    //                     return val;
+    //                 } else {
+    //                     let probe_dib = bucket_dib(idx, full_hash, cap);
+    //                     if probe_dib < dib {
+    //                         // ----- ROBIN HOOD
+    //                         let val2 = val as *mut V;
+    //                         do_robin_hood(hsh, key, val,
+    //                             full_hash, k, v, idx, probe_dib,
+    //                             &mut items, &mut triples, size, cap);
+
+    //                         unsafe {
+    //                             (*unsfptr).table.size = potential_new_size;
+    //                             return &mut (*val2); // check?
+    //                         }
+    //                         // ----- ROBIN HOOD
+    //                     }
+    //                 }
+    //             }
+    //         }
+    //     }
+    //     // We really shouldn't be here.
+    //     fail!("Internal HashMap error: Out of space.");
+    // }
 
     /// Inserts an element which has already been hashed, returning a reference
     /// to that element inside the hashtable. This is more efficient that using
@@ -1748,7 +1813,8 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
     fn insert_hashed<'a>(&'a mut self, hash: table::SafeHash, k: K, v: V) -> &'a mut V {
         let potential_new_size = self.table.size() + 1;
         self.make_some_room(potential_new_size);
-        self.insert_hashed_nocheck(hash, k, v)
+        let (val_ref, _) = self.swap_hashed_no_grow(hash, k, v);
+        val_ref
     }
 
     /// Return the value corresponding to the key in the map, or insert
