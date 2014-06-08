@@ -1278,7 +1278,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         self.pop_internal(starting_index)
     }
 
-    fn swap_hashed_no_grow(&mut self, hash: table::SafeHash, k: K, v: V) -> (&mut V, Option<V>) {
+    fn swap_hashed_no_grow(&mut self, hash: table::SafeHash, k: K, v: V, found: |V, &mut V|) -> &mut V {
         let potential_new_size = self.table.size() + 1;
 
         let unsfptr = self as *mut HashMap<K, V, H>;
@@ -1311,26 +1311,84 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                         overwrite(key, k);
                         overwrite(val, v);
                         (*unsfptr).table.size = potential_new_size;
-                        return (val, None);
+                        return val;
                     }
                 }
                 &full_hash => {
                     if full_hash == hash.inspect() && k == *key {
                         // slowing down?? use closure?
-                        return (val, Some(v));
+                        found(v, val);
+                        return val;
                     } else {
                         let probe_dib = bucket_dib(idx, full_hash, cap);
                         if probe_dib < dib {
-                            let bval: *mut V = val;
+                            // let bval: *mut V = val;
                             // ----- ROBIN HOOD
-                            do_robin_hood(hsh, key, val,
-                                full_hash, k, v, idx, probe_dib,
-                                &mut items, &mut triples, size, cap);
+                            // do_robin_hood(hsh, key, val,
+                            //     full_hash, k, v, idx, probe_dib,
+                            //     &mut items, &mut triples, size, cap);
+                            let (mut hash_ref, mut key_ref, mut val_ref) = (hsh, key, val);
+                            let (mut hash, mut k, mut v) = (hash.inspect(), k, v);
+                            let mut index = idx;
+                            let mut dib_param = probe_dib;
+                            'outer: loop {
+                                let (old_hash, old_key, old_val) = {
+                                    let old_hash = replace(hash_ref, hash);
+                                    let old_key  = replace(key_ref,  k);
+                                    let old_val  = replace(val_ref,  v);
 
-                            unsafe {
-                                (*unsfptr).table.size = potential_new_size;
+                                    (old_hash, old_key, old_val)
+                                };
+
+                                let mut items_clone = items.clone();
+                                let mut triples_clone = triples.clone();
+
+                                for (dib, idx) in range(dib_param + 1, size).zip(range(index + 1, cap).chain(range(0u, cap))) {
+                                    let (hsh, key, val) = match triples_clone.next() {
+                                        Some(t) => t,
+                                        None => {
+                                            triples_clone = items_clone.get();
+                                            triples_clone.next().unwrap()
+                                        }
+                                    };
+
+                                    match hsh {
+                                        &0u64 => {
+                                            // Finally. A hole!
+                                            *hsh = old_hash;
+                                            unsafe {
+                                                overwrite(key, old_key);
+                                                overwrite(val, old_val);
+                                                (*unsfptr).table.size = potential_new_size;
+                                                return val;
+                                            }
+                                        }
+                                        &full_hash => {
+                                            let probe_dib = bucket_dib(idx, full_hash, cap);
+                                            if probe_dib < dib {
+                                                hash_ref = hsh;
+                                                key_ref = key;
+                                                val_ref = val;
+                                                index = idx;
+                                                dib_param = probe_dib;
+                                                hash = old_hash;
+                                                k = old_key;
+                                                v = old_val;
+                                                items = items_clone;
+                                                triples = triples_clone;
+                                                continue 'outer;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                fail!("HashMap fatal error: 100% load factor?");
                             }
-                            return (unsafe {&mut(*bval)}, None);
+
+                            // unsafe {
+                                // (*unsfptr).table.size = potential_new_size;
+                            // }
+                            // return (unsafe {&mut(*bval)}, None);
                             // ----- ROBIN HOOD
                         }
                     }
@@ -1377,68 +1435,6 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> Map<K, V> for HashMap<K, V, H> {
     }
 }
 
-fn do_robin_hood<'a, K, V>(mut hash_ref: &'a mut u64, mut key_ref: &'a mut K, mut val_ref: &'a mut V,
-    mut hash: u64, mut k: K, mut v: V, mut index: uint, mut dib_param: uint,
-    items: &mut table::TriArysCycle<K, V>, triples: &mut table::MutTriVecEntries<'a, K, V>, size: uint, cap: uint) {
-    #![inline(always)] //won't work
-    // let (mut hash_ref, mut key_ref, mut val_ref) = (hsh, key, val);
-    // let (mut hash, mut k, mut v) = (hash.inspect(), k, v);
-    // let mut index = idx;
-    // let mut dib_param = probe_dib;
-    'outer: loop {
-        let (old_hash, old_key, old_val) = {
-            let old_hash = replace(hash_ref, hash);
-            let old_key  = replace(key_ref,  k);
-            let old_val  = replace(val_ref,  v);
-
-            (old_hash, old_key, old_val)
-        };
-
-        let mut items_clone = items.clone();
-        let mut triples_clone = triples.clone();
-
-        for (dib, idx) in range(dib_param + 1, size).zip(range(index + 1, cap).chain(range(0u, cap))) {
-            let (hsh, key, val) = match triples_clone.next() {
-                Some(t) => t,
-                None => {
-                    triples_clone = items_clone.get();
-                    triples_clone.next().unwrap()
-                }
-            };
-
-            match hsh {
-                &0u64 => {
-                    // Finally. A hole!
-                    *hsh = old_hash;
-                    unsafe {
-                        overwrite(key, old_key);
-                        overwrite(val, old_val);
-                        return;
-                    }
-                }
-                &full_hash => {
-                    let probe_dib = bucket_dib(idx, full_hash, cap);
-                    if probe_dib < dib {
-                        hash_ref = hsh;
-                        key_ref = key;
-                        val_ref = val;
-                        index = idx;
-                        dib_param = probe_dib;
-                        hash = old_hash;
-                        k = old_key;
-                        v = old_val;
-                        *items = items_clone;
-                        *triples = triples_clone;
-                        continue 'outer;
-                    }
-                }
-            }
-        }
-
-        fail!("HashMap fatal error: 100% load factor?");
-    }
-}
-
 impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> {
     fn find_mut<'a>(&'a mut self, k: &K) -> Option<&'a mut V> {
         match self.search(k) {
@@ -1455,8 +1451,9 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
         let potential_new_size = self.table.size() + 1;
         self.make_some_room(potential_new_size);
 
-        let (val_ref, maybe_val) = self.swap_hashed_no_grow(hash, k, v);
-        maybe_val.map(|val| replace(val_ref, val))
+        let mut ret = None;
+        self.swap_hashed_no_grow(hash, k, v, |val, val_ref| ret = Some(replace(val_ref, val)));
+        ret
     }
 
     fn pop(&mut self, k: &K) -> Option<V> {
@@ -1547,7 +1544,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         let old_size  = old_table.size();
 
         for (h, k, v) in old_table.move_iter() {
-            self.swap_hashed_no_grow(h, k, v);
+            self.swap_hashed_no_grow(h, k, v, |_, _| ());
         }
 
         assert_eq!(self.table.size(), old_size);
@@ -1590,7 +1587,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
 
                                 let hash = *hsh;
                                 *hsh = 0u64;
-                                (*unsfptr).swap_hashed_no_grow(table::SafeHash{hash:hash}, k, v);
+                                (*unsfptr).swap_hashed_no_grow(table::SafeHash{hash:hash}, k, v, |_, _| ());
                             }
                         }
                     }
@@ -1617,7 +1614,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                             &full_hash => {
                                 let k = ptr::read(key as *mut K as *K);
                                 let v = ptr::read(val as *mut V as *V);
-                                (*unsfptr).swap_hashed_no_grow(table::SafeHash{hash:full_hash}, k, v);
+                                (*unsfptr).swap_hashed_no_grow(table::SafeHash{hash:full_hash}, k, v, |_, _| ());
                                 *hsh = 0u64;
                             }
                         }
@@ -1813,8 +1810,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
     fn insert_hashed<'a>(&'a mut self, hash: table::SafeHash, k: K, v: V) -> &'a mut V {
         let potential_new_size = self.table.size() + 1;
         self.make_some_room(potential_new_size);
-        let (val_ref, _) = self.swap_hashed_no_grow(hash, k, v);
-        val_ref
+        self.swap_hashed_no_grow(hash, k, v, |_, _| ())
     }
 
     /// Return the value corresponding to the key in the map, or insert
