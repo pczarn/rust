@@ -1329,25 +1329,29 @@ pub struct HashMap<K, V, H = sip::SipHasher, R = DefaultResizePolicy> {
     // We keep this at the end since it might as well have tail padding.
     resize_policy: DefaultResizePolicy,
 }
-    fn bucket_dib(raw_index: uint, hash: u64, cap: uint) -> uint {
-        // where the hash of the element that happens to reside at
-        // `index_of_elem` tried to place itself first.
-        // let first_probe_index = self.probe(&index_of_elem.hash(), 0);
-        let hash_mask = cap - 1;
 
-        // So I heard a rumor that unsigned overflow is safe in rust..
-        let first_probe_index = ((hash as uint) + 0) & hash_mask;
+fn bucket_dib(raw_index: uint, hash: u64, cap: uint) -> uint {
+    // where the hash of the element that happens to reside at
+    // `index_of_elem` tried to place itself first.
+    // let first_probe_index = self.probe(&index_of_elem.hash(), 0);
+    let hash_mask = cap - 1;
 
-        // let raw_index = index_of_elem.raw_index();
+    // So I heard a rumor that unsigned overflow is safe in rust..
+    let first_probe_index = (hash as uint) & hash_mask;
+    // if hash as uint & cap == cap {
+    //     return 0;
+    // }
 
-        if first_probe_index <= raw_index {
-             // probe just went forward
-            raw_index - first_probe_index
-        } else {
-            // probe wrapped around the hashtable
-            raw_index + (cap - first_probe_index)
-        }
+    // let raw_index = index_of_elem.raw_index();
+
+    if first_probe_index <= raw_index {
+         // probe just went forward
+        raw_index - first_probe_index
+    } else {
+        // probe wrapped around the hashtable
+        raw_index + (cap - first_probe_index)
     }
+}
 
 impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
     // Probe the `idx`th bucket for a given hash, returning the index of the
@@ -1858,7 +1862,83 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         assert_eq!(self.table.size(), old_size);
     }
 
+    // fn resize_inplace(&mut self, cap: uint, new_capacity: uint) {
+    //     let vec_cap = cap >> table::LOG2_CHUNK;
+    //     let old_size = self.table.size();
+    //     // println!("growing to {}", new_capacity >> table::LOG2_CHUNK);
+    //     unsafe {
+    //         ptr::set_memory(self.table.as_mut_ptr().offset(vec_cap as int), 0u8, cap >> table::LOG2_CHUNK);
+    //     }
+
+    //     // let keep_len = self.table.size;
+    //     unsafe {
+    //         let mut idx = 0;
+    //         while idx < cap {
+    //             let i = idx;
+    //             idx += 1;
+
+    //             match self.table.peek(i) {
+    //                 table::Empty(_) => {},
+    //                 table::Full(idx) => {
+    //                     let h = idx.hash();
+    //                     if h.inspect() as uint & cap == cap {
+    //                         let (_, k, v) = self.table.take(idx);
+    //                         self.overwrite_hashed_existing_with(h, k, v, |_, _| ());
+    //                         self.table.len += 1;
+    //                     }
+    //                 }
+    //             }
+    //         }
+
+    //         // let mut items = table::TriAryIter::new(self.table.as_mut_slice().mut_slice_to(vec_cap));
+    //         // let unsfptr = unsafe{self as *mut HashMap<K, V, H>};
+    //         // // (*unsfptr).table.set_len(new_capacity >> table::LOG2_CHUNK);
+    //         // // let mut last_empty = false;
+
+    //         // // let mut idx = 0;
+    //         // for mut triples in items {
+    //         //     // very important to keep this 
+    //         //     // set_memory((triples.ptr as *mut table::TriAry<K, V>).offset(vec_cap as int) as *mut u8, 0u8, table::CHUNK);
+    //         //     for bucket in triples {
+    //         //         match (*bucket.hash) as uint & cap {
+    //         //             0u => {} // empty or in place
+    //         //             _ => {
+    //         //                 // Put it where it would have been
+    //         //                 let k = ptr::read(bucket.key as *mut K as *K);
+    //         //                 let v = ptr::read(bucket.val as *mut V as *V);
+
+    //         //                 let hash = *bucket.hash;
+    //         //                 *bucket.hash = 0u64;
+    //         //                 // let half_off = (cap >> table::LOG2_CHUNK) as int;
+    //         //                 // let (hsh2, key2, val2) = (
+    //         //                 //     (hsh as *mut u64 as *mut table::TriAry<K, V>).offset(half_off) as *mut u64,
+    //         //                 //     (key as *mut K as *mut table::TriAry<K, V>).offset(half_off) as *mut K,
+    //         //                 //     (val as *mut V as *mut table::TriAry<K, V>).offset(half_off) as *mut V,
+    //         //                 // );
+    //         //                 // if last_empty && *hsh2 == 0u64 {
+    //         //                 //     unsafe {
+    //         //                 //         *hsh2 = hash;
+    //         //                 //         overwrite(key2, k);
+    //         //                 //         overwrite(val2, v);
+    //         //                 //         // (*unsfptr).table.size = potential_new_size;
+    //         //                 //     }
+    //         //                 // }
+    //         //                 // else {
+    //         //                 // (*unsfptr).pop_internal(table::FullIndex{idx:idx as int,hash: table::SafeHash{hash:hash},nocopy: marker::NoCopy,});
+    //         //                 (*unsfptr).overwrite_hashed_existing_with(table::SafeHash{hash:hash}, k, v, |_, _| ());
+    //         //                 // }
+    //         //                 // last_empty = false;
+    //         //             }
+    //         //         }
+    //         //         // idx += 1;
+    //         //     }
+    //         // }
+    //     }
+    //     assert_eq!(self.table.size(), old_size);
+    // }
+
     fn resize_inplace(&mut self, cap: uint, new_capacity: uint) {
+        use mem;
         let vec_cap = cap >> table::LOG2_CHUNK;
         let old_size = self.table.size();
         // println!("growing to {}", new_capacity >> table::LOG2_CHUNK);
@@ -1868,43 +1948,73 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
 
         // let keep_len = self.table.size;
         unsafe {
-            let mut idx = 0;
-            while idx < cap {
-                let i = idx;
-                idx += 1;
+            // let mut idx = 0;
+            // while idx < cap {
+            //     let i = idx;
+            //     idx += 1;
 
-                match self.table.peek(i) {
-                    table::Empty(_) => {},
-                    table::Full(idx) => {
-                        let h = idx.hash();
-                        if h.inspect() as uint & cap == cap {
-                            let (_, k, v) = self.table.take(idx);
-                            self.overwrite_hashed_existing_with(h, k, v, |_, _| ());
-                            self.table.len += 1;
+            //     match self.table.peek(i) {
+            //         table::Empty(_) => {},
+            //         table::Full(idx) => {
+            //             let h = idx.hash();
+            //             if h.inspect() as uint & cap == cap {
+            //                 let (_, k, v) = self.table.take(idx);
+            //                 self.overwrite_hashed_existing_with(h, k, v, |_, _| ());
+            //                 self.table.len += 1;
+            //             }
+            //         }
+            //     }
+            // }
+
+            let mut items = table::TriAryIter::new(self.table.as_mut_slice().mut_slice_to(vec_cap));
+            // let mut triples = items.next().unwrap();
+            let unsfptr = unsafe{self as *mut HashMap<K, V, H>};
+            // (*unsfptr).table.set_len(new_capacity >> table::LOG2_CHUNK);
+            // let mut last_empty = false;
+
+            let mut idx = 0;
+            // let mut swapping = false;
+            // let mut swap_items = items.clone();
+            // let mut swap_triples = mem::uninit();
+            for mut triples in items {
+                for bucket in triples {
+                    match bucket.hash {
+                        &full_hash if full_hash as uint & (new_capacity - 1) != idx => {
+                            let k = ptr::read(bucket.key as *mut K as *K);
+                            let v = ptr::read(bucket.val as *mut V as *V);
+
+                            let hash = replace(bucket.hash, 0u64);
+                            (*unsfptr).overwrite_hashed_existing_with(table::SafeHash{hash:hash}, k, v, |_, _| ());
+                        }
+                        _ => { // empty or in place
                         }
                     }
+                    idx += 1;
                 }
             }
-
-            // let mut items = table::TriAryIter::new(self.table.as_mut_slice().mut_slice_to(vec_cap));
-            // let unsfptr = unsafe{self as *mut HashMap<K, V, H>};
-            // // (*unsfptr).table.set_len(new_capacity >> table::LOG2_CHUNK);
-            // // let mut last_empty = false;
-
-            // // let mut idx = 0;
-            // for mut triples in items {
+            // loop {
+            //     // let (prev_items, prev_triples) = (items.clone(), triples.clone());
+            //     let bucket = match triples.next() {
+            //         Some(bucket) => bucket,
+            //         None => {
+            //             triples = match items.next() {
+            //                 Some(t) => t,
+            //                 None => break
+            //             };
+            //             triples.next().unwrap()
+            //         }
+            //     };
             //     // very important to keep this 
             //     // set_memory((triples.ptr as *mut table::TriAry<K, V>).offset(vec_cap as int) as *mut u8, 0u8, table::CHUNK);
-            //     for bucket in triples {
-            //         match (*bucket.hash) as uint & cap {
-            //             0u => {} // empty or in place
-            //             _ => {
+            //     // for bucket in triples {
+            //         match bucket.hash {
+            //             &0u64 => { // empty or in place
+            //                 // swapping = false;
+            //                 // swap_items = items.clone();
+            //                 // swap_triples = triples.clone();
+            //             }
+            //             &full_hash => {
             //                 // Put it where it would have been
-            //                 let k = ptr::read(bucket.key as *mut K as *K);
-            //                 let v = ptr::read(bucket.val as *mut V as *V);
-
-            //                 let hash = *bucket.hash;
-            //                 *bucket.hash = 0u64;
             //                 // let half_off = (cap >> table::LOG2_CHUNK) as int;
             //                 // let (hsh2, key2, val2) = (
             //                 //     (hsh as *mut u64 as *mut table::TriAry<K, V>).offset(half_off) as *mut u64,
@@ -1921,13 +2031,105 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
             //                 // }
             //                 // else {
             //                 // (*unsfptr).pop_internal(table::FullIndex{idx:idx as int,hash: table::SafeHash{hash:hash},nocopy: marker::NoCopy,});
-            //                 (*unsfptr).overwrite_hashed_existing_with(table::SafeHash{hash:hash}, k, v, |_, _| ());
+            //                 // (*unsfptr).overwrite_hashed_existing_with(table::SafeHash{hash:hash}, k, v, |_, _| ());
             //                 // }
             //                 // last_empty = false;
+            //                 //-----
+            //                 if full_hash as uint & cap == cap {
+            //                     let k = ptr::read(bucket.key as *mut K as *K);
+            //                     let v = ptr::read(bucket.val as *mut V as *V);
+
+            //                     let hash = replace(bucket.hash, 0u64);
+            //                     (*unsfptr).overwrite_hashed_existing_with(table::SafeHash{hash:hash}, k, v, |_, _| ());
+            //                     // if !swapping {
+            //                     //     swapping = true;
+            //                     //     // swap_items = prev_items.clone();
+            //                     //     // swap_triples = prev_triples.clone();
+            //                     // }
+            //                 }
+            //                 // else {
+            //                 //     if swapping {
+            //                 //         let swap_bucket = match swap_triples.next() {
+            //                 //             Some(bucket) => bucket,
+            //                 //             None => {
+            //                 //                 swap_triples = swap_items.next().unwrap();
+            //                 //                 swap_triples.next().unwrap()
+            //                 //             }
+            //                 //         };
+            //                 //         let k = ptr::read(bucket.key as *mut K as *K);
+            //                 //         let v = ptr::read(bucket.val as *mut V as *V);
+
+            //                 //         *swap_bucket.hash = *bucket.hash;
+            //                 //         *bucket.hash = 0u64;
+            //                 //         overwrite(swap_bucket.key, k);
+            //                 //         overwrite(swap_bucket.val, v);
+            //                 //     } else {
+            //                 //         swap_items = items.clone();
+            //                 //         swap_triples = triples.clone();
+            //                 //     }
+            //                 // }
+            //                 //-----
+            //                 // if full_hash as uint & cap == cap {
+            //                 //     let k = ptr::read(bucket.key as *mut K as *K);
+            //                 //     let v = ptr::read(bucket.val as *mut V as *V);
+
+            //                 //     let hash = replace(bucket.hash, 0u64);
+            //                 //     (*unsfptr).overwrite_hashed_existing_with(table::SafeHash{hash:hash}, k, v, |_, _| ());
+            //                 //     let mut swap_items = items.clone();
+            //                 //     let mut swap_triples = triples.clone();
+            //                 //     let mut idx_delta = 1;
+            //                 //     let he_wants_there = full_hash as uint & (cap - 1);
+            //                 //     loop {
+            //                 //         let swap_bucket = match swap_triples.next() {
+            //                 //             Some(bucket) => bucket,
+            //                 //             None => {
+            //                 //                 swap_triples = match swap_items.next() {
+            //                 //                     Some(t) => t,
+            //                 //                     None => break
+            //                 //                 };
+            //                 //                 swap_triples.next().unwrap()
+            //                 //             }
+            //                 //         };
+            //                 //         match swap_bucket.hash {
+            //                 //             &0u64 => break,
+            //                 //             &swap_full_hash => {
+            //                 //                 if swap_full_hash as uint & cap == cap {
+            //                 //                     continue
+            //                 //                 }
+            //                 //                 else {
+            //                 //                     let k = ptr::read(swap_bucket.key as *mut K as *K);
+            //                 //                     let v = ptr::read(swap_bucket.val as *mut V as *V);
+            //                 //                     *bucket.hash = replace(swap_bucket.hash, 0u64);
+            //                 //                     overwrite(bucket.key, k);
+            //                 //                     overwrite(bucket.val, v);
+            //                 //                     break
+            //                 //                 }
+            //                 //             }
+            //                 //         }
+            //                 //     }
+            //                 // }
+            //                 // else {
+            //                 //     if swapping {
+            //                 //         let swap_bucket = match swap_triples.next() {
+            //                 //             Some(bucket) => bucket,
+            //                 //             None => {
+            //                 //                 swap_triples = swap_items.next().unwrap();
+            //                 //                 swap_triples.next().unwrap()
+            //                 //             }
+            //                 //         };
+            //                 //         let k = ptr::read(bucket.key as *mut K as *K);
+            //                 //         let v = ptr::read(bucket.val as *mut V as *V);
+
+            //                 //         *swap_bucket.hash = *bucket.hash;
+            //                 //         *bucket.hash = 0u64;
+            //                 //         overwrite(swap_bucket.key, k);
+            //                 //         overwrite(swap_bucket.val, v);
+            //                 //     }
+            //                 // }
             //             }
             //         }
             //         // idx += 1;
-            //     }
+            //     // }
             // }
         }
         assert_eq!(self.table.size(), old_size);
@@ -1944,11 +2146,11 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
 
         if cap <= grow_at {
             let new_capacity = cap << 1;
-            // if !self.table.try_grow(new_capacity >> table::LOG2_CHUNK) {
+            if !self.table.try_grow(new_capacity >> table::LOG2_CHUNK) {
                 self.resize(new_capacity);
-            //     return;
-            // }
-            // self.resize_inplace(cap, new_capacity);
+                return;
+            }
+            self.resize_inplace(cap, new_capacity);
         } else if shrink_at <= cap {
             let new_capacity = cap >> 1;
             // let keep_len = self.table.size;
