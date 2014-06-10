@@ -1977,17 +1977,39 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
             // let mut swap_items = items.clone();
             // let mut swap_triples = mem::uninit();
             for mut triples in items {
+                let mut swapping = 0;
                 for bucket in triples {
                     match bucket.hash {
-                        &full_hash if full_hash as uint & (new_capacity - 1) != idx => {
+                        &0u64 => { // empty or in place
+                            swapping = 0;
+                        }
+                        &full_hash /*if full_hash as uint & (new_capacity - 1) != idx*/ => {
                             let k = ptr::read(bucket.key as *mut K as *K);
                             let v = ptr::read(bucket.val as *mut V as *V);
 
                             let hash = replace(bucket.hash, 0u64);
-                            (*unsfptr).overwrite_hashed_existing_with(table::SafeHash{hash:hash}, k, v, |_, _| ());
+                            if full_hash as uint & cap == cap {
+                                // todo: branchless!
+                                swapping += 1;
+                                (*unsfptr).overwrite_hashed_existing_with(table::SafeHash{hash:hash}, k, v, |_, _| ());
+                            }
+                            else if bucket_dib(idx, full_hash, new_capacity) < swapping {
+                                swapping = 0;
+                                (*unsfptr).overwrite_hashed_existing_with(table::SafeHash{hash:hash}, k, v, |_, _| ());
+                            }
+                            else if swapping != 0 /*&& (full_hash as uint & (new_capacity - 1)) >= idx - swapping*/ {
+                                let off = -(swapping as int);
+                                *(bucket.hash as *mut u64).offset(off) = hash;
+                                overwrite((bucket.key as *mut K).offset(off), k);
+                                overwrite((bucket.val as *mut V).offset(off), v);
+                            }
+                            else {
+                                (*unsfptr).overwrite_hashed_existing_with(table::SafeHash{hash:hash}, k, v, |_, _| ());
+                            }
                         }
-                        _ => { // empty or in place
-                        }
+                        // }
+                        // _ => { // empty or in place
+                        // }
                     }
                     idx += 1;
                 }
@@ -3466,7 +3488,8 @@ mod bench {
 
         b.iter(|| {
             m.insert(k, k);
-            k += 1;
+            k += 27;
+            // k ^= k << 3;
         });
     }
 
