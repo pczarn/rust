@@ -50,7 +50,7 @@ mod table {
     use ptr;
     // use rt::heap::{allocate, deallocate};
     use tuple::{Tuple3, Tuple8};
-    use container::Container;
+    use collections::Collection;
     use vec::Vec;
     use iter::{Iterator, CloneableIterator};
     use iter::{range_step_inclusive, range_step};
@@ -2981,8 +2981,8 @@ mod test_set {
     use prelude::*;
 
     use super::HashSet;
-    use slice::ImmutableEqVector;
     use collections::Collection;
+    use slice::ImmutableEqVector;
 
     #[test]
     fn test_disjoint() {
