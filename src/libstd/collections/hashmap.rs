@@ -121,7 +121,7 @@ mod table {
     // An array length of 8 (= 2^3) is enough to ensure good cache locality
     // in hashmaps for which `size_of<K> + size_of<V>` is a multiple of 8,
     // on systems with cache line of 64 bytes of smaller.
-    pub static LOG2_CHUNK: uint = 5;
+    pub static LOG2_CHUNK: uint = 4;
     pub static CHUNK: uint = 1 << LOG2_CHUNK; // 8
     pub static CHUNK_MASK: uint = CHUNK - 1;
 
@@ -1859,7 +1859,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         }
 
         // self.table.size = new_size;
-        assert_eq!(self.table.size(), old_size);
+        // assert_eq!(self.table.size(), old_size);
     }
 
     // fn resize_inplace(&mut self, cap: uint, new_capacity: uint) {
@@ -1988,24 +1988,28 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                             let v = ptr::read(bucket.val as *mut V as *V);
 
                             let hash = replace(bucket.hash, 0u64);
-                            if full_hash as uint & cap == cap {
+
+                            if hash as uint & cap == cap {
                                 // todo: branchless!
                                 swapping += 1;
-                                (*unsfptr).overwrite_hashed_existing_with(table::SafeHash{hash:hash}, k, v, |_, _| ());
                             }
-                            else if bucket_dib(idx, full_hash, new_capacity) < swapping {
+                            else if bucket_dib(idx, hash, new_capacity) == 0 {
                                 swapping = 0;
-                                (*unsfptr).overwrite_hashed_existing_with(table::SafeHash{hash:hash}, k, v, |_, _| ());
+                                idx += 1;
+                                continue;
+                            }
+                            else if bucket_dib(idx, hash, new_capacity) < swapping {
+                                swapping = 0;
                             }
                             else if swapping != 0 /*&& (full_hash as uint & (new_capacity - 1)) >= idx - swapping*/ {
                                 let off = -(swapping as int);
                                 *(bucket.hash as *mut u64).offset(off) = hash;
                                 overwrite((bucket.key as *mut K).offset(off), k);
                                 overwrite((bucket.val as *mut V).offset(off), v);
+                                idx += 1;
+                                continue;
                             }
-                            else {
-                                (*unsfptr).overwrite_hashed_existing_with(table::SafeHash{hash:hash}, k, v, |_, _| ());
-                            }
+                            (*unsfptr).overwrite_hashed_existing_with(table::SafeHash{hash:hash}, k, v, |_, _| ());
                         }
                         // }
                         // _ => { // empty or in place
