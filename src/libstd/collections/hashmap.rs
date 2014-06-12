@@ -639,8 +639,8 @@ mod table {
             }
         }
 
-        pub fn shrink_to_fit(&mut self) {
-            if self.len == 0 {
+        pub fn shrink_to(&mut self, new_cap: uint) {
+            if new_cap == 0 {
                 if self.cap != 0 {
                     unsafe {
                         dealloc(self.ptr, self.cap)
@@ -648,15 +648,16 @@ mod table {
                     self.cap = 0;
                 }
             } else {
+                let new_cap = new_cap >> LOG2_CHUNK;
                 unsafe {
                     // Overflow check is unnecessary as the vector is already at
                     // least this large.
                     self.ptr = reallocate(self.ptr as *mut u8,
-                                          self.len * mem::size_of::<TriAry<K, V>>(),
+                                          new_cap * mem::size_of::<TriAry<K, V>>(),
                                           mem::min_align_of::<TriAry<K, V>>(),
                                           self.cap * mem::size_of::<TriAry<K, V>>()) as *mut TriAry<K, V>;
                 }
-                self.cap = self.len;
+                self.cap = new_cap;
             }
         }
     }
@@ -2199,7 +2200,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                     }
                 }
             }
-            self.table.shrink_to_fit();
+            self.table.shrink_to(new_capacity);
             // self.table.size = keep_len;
         }
     }
