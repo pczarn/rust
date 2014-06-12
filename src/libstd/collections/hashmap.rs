@@ -1331,27 +1331,29 @@ pub struct HashMap<K, V, H = sip::SipHasher, R = DefaultResizePolicy> {
     resize_policy: DefaultResizePolicy,
 }
 
-fn bucket_dib(raw_index: uint, hash: u64, cap: uint) -> uint {
+#[inline]
+pub fn bucket_dib(raw_index: uint, hash: u64, cap: uint) -> uint {
     // where the hash of the element that happens to reside at
     // `index_of_elem` tried to place itself first.
     // let first_probe_index = self.probe(&index_of_elem.hash(), 0);
     let hash_mask = cap - 1;
 
-    // So I heard a rumor that unsigned overflow is safe in rust..
-    let first_probe_index = (hash as uint) & hash_mask;
-    // if hash as uint & cap == cap {
-    //     return 0;
+    // // So I heard a rumor that unsigned overflow is safe in rust..
+    // let first_probe_index = (hash as uint) & hash_mask;
+    // // if hash as uint & cap == cap {
+    // //     return 0;
+    // // }
+
+    // // let raw_index = index_of_elem.raw_index();
+
+    // if first_probe_index <= raw_index {
+    //      // probe just went forward
+    //     raw_index - first_probe_index
+    // } else {
+    //     // probe wrapped around the hashtable
+    //     raw_index + (cap - first_probe_index)
     // }
-
-    // let raw_index = index_of_elem.raw_index();
-
-    if first_probe_index <= raw_index {
-         // probe just went forward
-        raw_index - first_probe_index
-    } else {
-        // probe wrapped around the hashtable
-        raw_index + (cap - first_probe_index)
-    }
+    ((raw_index | cap) - (hash as uint & hash_mask)) & hash_mask
 }
 
 impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
@@ -3569,6 +3571,22 @@ mod bench {
             m.pop(&k);
             m.insert(k + 1000, k + 1000);
             k += 1;
+        })
+    }
+
+    #[bench]
+    fn bench_bucket_dib(b : &mut Bencher) {
+use rand::Rng;
+use rand;
+        use super::bucket_dib;
+        let mut r = rand::task_rng();
+        let h = r.gen();
+        // let r1 = r.gen();
+
+        b.iter(|| {
+            for idx in range(0u, 1024) {
+                test::black_box(bucket_dib(idx, h, 1024));
+            }
         })
     }
 }
