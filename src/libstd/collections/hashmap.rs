@@ -30,6 +30,7 @@ use result::{Ok, Err};
 use kinds::marker;
 use mem::overwrite;
 use ptr;
+use core::num::Bitwise;
 
 use vec::Vec;
 use slice::ImmutableVector;
@@ -122,7 +123,7 @@ mod table {
     // in hashmaps for which `size_of<K> + size_of<V>` is a multiple of 8,
     // on systems with cache line of 64 bytes of smaller.
     pub static LOG2_CHUNK: uint = 4;
-    pub static CHUNK: uint = 1 << LOG2_CHUNK; // 8
+    pub static CHUNK: uint = 1 << LOG2_CHUNK; // 8 or 16 or 32
     pub static CHUNK_MASK: uint = CHUNK - 1;
 
     pub type TriAry<K, V> = (
@@ -519,9 +520,9 @@ mod table {
                 (EmptyIndex { idx: idx, nocopy: marker::NoCopy }, k, v)
             };
 
-            unsafe {
-                self.len -= 1;
-            }
+
+            self.len -= 1;
+            // println!("take. {}", self.len);
 
             tup
         }
@@ -1118,7 +1119,7 @@ mod table {
                             let (k, v) = self.read(&idx);
 
                             let &(ref mut hashes, ref mut keys, ref mut vals) = new_ht.get_mut(i >> LOG2_CHUNK);
-                            hashes[i] = hash;
+                            hashes[i & CHUNK_MASK] = hash;
                 // let keys = (new_ht.hashes as *mut u8).offset(new_ht.keys() as int) as *mut K;
                 // let vals = (new_ht.hashes as *mut u8).offset(new_ht.vals() as int) as *mut V;
                             overwrite(&mut keys[i & CHUNK_MASK], (*k).clone());
@@ -1432,8 +1433,8 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                 }
                 &full_hash => {
                     // We can finish the search early if we hit any bucket
-                    // opt
-                    // if bucket_dib(idx, full_hash, cap) < dib {
+                    // opt? shorter find_nonexisting, longer find_existing
+                    // if bucket_dib(idx, full_hash, cap) < idx - full_skipped {
                     //     return None;
                     // }
                     if full_hash != hash.inspect() {
@@ -1450,7 +1451,8 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         let mut items = table::ImmTriArysCycle::new(self.table.as_slice().slice_from(num_skipped + 1), cap >> table::LOG2_CHUNK);
         let mut triples = items.get();
 
-        for (dib, idx) in range_inclusive(table::CHUNK - to_skip, size).zip(range(limit, cap).chain(range(0u, cap))) {
+        let dib_idx = limit-(table::CHUNK - to_skip);
+        for dib in range_inclusive(table::CHUNK - to_skip, size) {
             let (hsh, key, val) = match triples.next() {
                 Some(t) => t,
                 None => {
@@ -1465,7 +1467,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                 }
                 &full_hash => {
                     // We can finish the search early if we hit any bucket
-                    if bucket_dib(idx, full_hash, cap) < dib {
+                    if bucket_dib(dib + dib_idx, full_hash, cap) < dib {
                         return None;
                     }
                     if full_hash != hash.inspect() {
@@ -1473,7 +1475,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                     }
 
                     if is_match(key) {
-                        return Some(table::FullIndex{idx:idx as int,hash: table::SafeHash{hash:full_hash},nocopy: marker::NoCopy,});
+                        return Some(table::FullIndex{idx:((dib + dib_idx)&(cap - 1)) as int,hash: table::SafeHash{hash:full_hash},nocopy: marker::NoCopy,});
                     }
                 }
             }
@@ -1587,9 +1589,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         self.pop_internal(starting_index)
     }
 
-    fn overwrite_hashed_existing_with(&mut self, hash: table::SafeHash, k: K, v: V,
-    already_exists: |V, &mut V|) -> &mut V {
-        #![inline(never)]
+    fn insert_first_empty(&mut self, hash: table::SafeHash, k: K, v: V) {
         let size = self.table.size();
         let cap = self.table.capacity();
 
@@ -1604,7 +1604,49 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
             table::mut_iter_at((*unsfptr).table.as_mut_slice().unsafe_mut_ref(num_skipped), to_skip)
         };
 
-        for (dib, idx) in range_inclusive(0u, size).zip(range(full_skipped, cap).chain(range(0u, cap))) {
+        for _ in range_inclusive(0u, size) {
+            let bucket = match triples.next() {
+                Some(bucket) => bucket,
+                None => {
+                    triples = items.get();
+                    triples.next().unwrap()
+                }
+            };
+
+            match bucket.hash {
+                &0u64 => {
+                    *bucket.hash = hash.inspect();
+                    unsafe {
+                        overwrite(bucket.key, k);
+                        overwrite(bucket.val, v);
+                        return;
+                    }
+                }
+                _ => {}
+            }
+        }
+        // We really shouldn't be here.
+        fail!("Internal HashMap error: Out of space.");
+    }
+
+    fn overwrite_hashed_existing_with(&mut self, hash: table::SafeHash, k: K, v: V,
+    already_exists: |V, &mut V|) -> &mut V {
+        let size = self.table.size();
+        let cap = self.table.capacity();
+
+        let full_skipped = (hash.inspect() as uint) & (cap - 1);
+        let to_skip = full_skipped & table::CHUNK_MASK;
+        let num_skipped = full_skipped >> table::LOG2_CHUNK;
+
+        let mut items = table::TriArysCycle::new(self.table.as_mut_slice().mut_slice_from(num_skipped + 1), cap >> table::LOG2_CHUNK);
+
+        let mut triples = unsafe {
+            let unsfptr = self as *mut HashMap<K, V, H>;
+            table::mut_iter_at((*unsfptr).table.as_mut_slice().unsafe_mut_ref(num_skipped), to_skip)
+        };
+
+        for (dib, idx) in range_inclusive(0u, size).zip(range_inclusive(full_skipped, full_skipped + size)) {
+        // for dib in range_inclusive(0u, size) {
             // let idx = (dib + full_skipped) & (cap - 1);
             let bucket = match triples.next() {
                 Some(bucket) => bucket,
@@ -1631,18 +1673,27 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                             return bucket.val;
                         }
                     }
-                    let probe_dib = bucket_dib(idx, full_hash, cap);
+                    // let probe_dib = probe_luck_diff(full_hash, full_skipped, cap);
+                    let probe_dib = bucket_dib(dib + full_skipped, full_hash, cap);
                     if probe_dib < dib {
+                    // if full_skipped < (full_hash as uint & (cap - 1)) {
+                    // if (((full_skipped | cap) - ((full_skipped + dib) & (cap - 1))) & cap) + (full_hash as uint & (cap - 1)) > full_skipped {
+                    // let skipped = full_skipped;
+                    // if (((skipped|cap) - idx - 1) & ((idx|cap)-(full_hash as uint & (cap - 1))) & cap) + (full_hash as uint & (cap - 1)) > full_skipped {
+                    //     println!("({} & {} & cap) + {} > {}. dib {} idx {}", ((skipped|cap) - idx - 1), ((idx|cap)-(full_hash as uint & (cap - 1))), (full_hash as uint & (cap - 1)), full_skipped, dib, idx);
                         // let bval: *mut V = val;
                         // ----- ROBIN HOOD
                         // do_robin_hood(hsh, key, val,
                         //     full_hash, k, v, idx, probe_dib,
                         //     &mut items, &mut triples, size, cap);
                         // let (mut hash_ref, mut key_ref, mut val_ref) = (bucket.hash, bucket.key, bucket.val);
+                        let mut dib_param = probe_dib;//bucket_dib(idx, full_hash, cap);
+                        // println!("{} < {}; cap {}", dib_param, dib, cap);
+                        // assert!(dib_param < dib);
                         let mut robin_bucket = bucket;
                         let (mut hash, mut k, mut v) = (hash.inspect(), k, v);
-                        let mut index = idx;
-                        let mut dib_param = probe_dib;
+                        let mut index = (dib + full_skipped) & (cap - 1);
+                        let mut idx_dib = index - dib_param;
                         'outer: loop {
                             let (old_hash, old_key, old_val) = {
                                 let old_hash = replace(robin_bucket.hash, hash);
@@ -1655,7 +1706,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                             let mut items_clone = items.clone();
                             let mut triples_clone = triples.clone();
 
-                            for (dib, idx) in range(dib_param + 1, size).zip(range(index + 1, cap).chain(range(0u, cap))) {
+                            for dib in range(dib_param + 1, size) {
                                 let bucket = match triples_clone.next() {
                                     Some(bucket) => bucket,
                                     None => {
@@ -1675,11 +1726,12 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                                         return bucket.val;
                                     }
                                     &full_hash => {
-                                        let probe_dib = bucket_dib(idx, full_hash, cap);
+                                        let probe_dib = bucket_dib(dib + idx_dib, full_hash, cap);
                                         if probe_dib < dib {
+                                        // if (full_hash as uint & (cap - 1)) < (full_hash as uint & (cap - 1)) {
                                             robin_bucket = bucket;
-                                            index = idx;
-                                            dib_param = probe_dib;
+                                            dib_param = probe_dib;//bucket_dib(idx, full_hash, cap);//probe_dib;
+                                            idx_dib = ((dib + idx_dib) & (cap - 1)) - probe_dib;
                                             hash = old_hash;
                                             k = old_key;
                                             v = old_val;
@@ -1700,6 +1752,9 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                         // return (unsafe {&mut(*bval)}, None);
                         // ----- ROBIN HOOD
                     }
+                    // else {
+                    //     assert!(bucket_dib(idx, full_hash, cap) >= dib)
+                    // }
                 }
             }
         }
@@ -1862,10 +1917,9 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         }
 
         // self.table.size = new_size;
-        // assert_eq!(self.table.size(), old_size);
+        assert_eq!(self.table.size(), old_size);
     }
 
-    // fn resize_inplace(&mut self, cap: uint, new_capacity: uint) {
     //     let vec_cap = cap >> table::LOG2_CHUNK;
     //     let old_size = self.table.size();
     //     // println!("growing to {}", new_capacity >> table::LOG2_CHUNK);
@@ -1943,6 +1997,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
     fn resize_inplace(&mut self, cap: uint, new_capacity: uint) {
         use mem;
         let vec_cap = cap >> table::LOG2_CHUNK;
+        // let cap_shift = cap.trailing_zeros();
         let old_size = self.table.size();
         // println!("growing to {}", new_capacity >> table::LOG2_CHUNK);
         unsafe {
@@ -1974,45 +2029,107 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
             let unsfptr = unsafe{self as *mut HashMap<K, V, H>};
             // (*unsfptr).table.set_len(new_capacity >> table::LOG2_CHUNK);
             // let mut last_empty = false;
-
+            let mut cap_tz = cap.trailing_zeros();
             let mut idx = 0;
             // let mut swapping = false;
             // let mut swap_items = items.clone();
             // let mut swap_triples = mem::uninit();
             for mut triples in items {
-                let mut swapping = 0;
+                // let mut swapping = 1;
+                // let mut not_first = false;
                 for bucket in triples {
                     match bucket.hash {
                         &0u64 => { // empty or in place
-                            swapping = 0;
+                            // swapping = 0;
+                            // not_first = true;
                         }
-                        &full_hash /*if full_hash as uint & (new_capacity - 1) != idx*/ => {
+                        _ /*if full_hash as uint & (new_capacity - 1) != idx*/ => {
+                            // if *bucket.hash as uint & (new_capacity - 1) == idx {
+                            //     not_first = true;
+                            //     idx += 1;
+                            //     continue;
+                            // }
                             let k = ptr::read(bucket.key as *mut K as *K);
                             let v = ptr::read(bucket.val as *mut V as *V);
 
                             let hash = replace(bucket.hash, 0u64);
+                            // if swapping == 1 {
+                            //     let off = -1;
+                            //     *(bucket.hash as *mut u64).offset(off) = hash;
+                            //     overwrite((bucket.key as *mut K).offset(off), k);
+                            //     overwrite((bucket.val as *mut V).offset(off), v);
+                            // }
+                            // else {
 
-                            if hash as uint & cap == cap {
-                                // todo: branchless!
-                                swapping += 1;
-                            }
-                            else if bucket_dib(idx, hash, new_capacity) == 0 {
-                                swapping = 0;
-                                idx += 1;
-                                continue;
-                            }
-                            else if bucket_dib(idx, hash, new_capacity) < swapping {
-                                swapping = 0;
-                            }
-                            else if swapping != 0 /*&& (full_hash as uint & (new_capacity - 1)) >= idx - swapping*/ {
-                                let off = -(swapping as int);
-                                *(bucket.hash as *mut u64).offset(off) = hash;
-                                overwrite((bucket.key as *mut K).offset(off), k);
-                                overwrite((bucket.val as *mut V).offset(off), v);
-                                idx += 1;
-                                continue;
-                            }
-                            (*unsfptr).overwrite_hashed_existing_with(table::SafeHash{hash:hash}, k, v, |_, _| ());
+                            // let branchless_half = ((full_hash as uint) >> cap_shift) & 1;
+                            // match hash as uint & cap {
+                            //     // idx => {}
+                            //     0 => {
+                                    (*unsfptr).insert_first_empty(table::SafeHash{hash:hash}, k, v);
+                            //     }
+                            //     _ => {
+                            //         (*unsfptr).overwrite_hashed_existing_with(table::SafeHash{hash:hash}, k, v, |_, _| ());
+                            //     }
+                            // }
+                            // if hash as uint & (new_capacity - 1) == idx {
+                            // }
+                            // else if hash as uint & cap != 0 {
+                            //     // todo: branchless?
+                            //     // if not_first {
+                            //     // let vref = (*unsfptr).overwrite_hashed_existing_with(table::SafeHash{hash:hash}, k, v, |_, _| ());
+                            //     // if vref as *mut V > bucket.val as *mut V {
+                            //     // if swapping <= 0 {
+                            //     //     swapping -= 1;
+                            //     // }
+                            //     // }
+                            //     // else {
+                            //         // swapping = (bucket.val as *mut V as uint - vref as *mut V as uint) / mem::size_of::<V>();
+                            //     // }
+                            //     // }
+                            //     (*unsfptr).overwrite_hashed_existing_with(table::SafeHash{hash:hash}, k, v, |_, _| ());
+                            // }
+                            // else {
+                            //     (*unsfptr).insert_first_empty(table::SafeHash{hash:hash}, k, v);
+                            // }
+                            // else if hash as uint & (new_capacity - 1) == idx {
+                            //     swapping = 0;
+                            //     idx += 1;
+                            //     continue;
+                            // }
+                            // else if bucket_dib(idx, hash, new_capacity) < swapping {
+                            //     // if swapping == 1 {
+                            //     //     idx += 1;
+                            //     //     continue;
+                            //     // }
+                            //     swapping = 0;
+                            // }
+                            //---
+                            // else if swapping < 0 /*&& (full_hash as uint & (new_capacity - 1)) >= idx - swapping*/ {
+                            //     // let off = -(swapping as int);
+                            //     *(bucket.hash as *mut u64).offset(swapping) = hash;
+                            //     overwrite((bucket.key as *mut K).offset(swapping), k);
+                            //     overwrite((bucket.val as *mut V).offset(swapping), v);
+                            //     idx += 1;
+                            //     continue;
+                            // }
+                            //---
+                            // else {
+                                // (*unsfptr).overwrite_hashed_existing_with(table::SafeHash{hash:hash}, k, v, |_, _| ());
+                            // }
+                            // else {
+                            //     not_first = true;
+                            // }
+
+                            // if hash as uint & cap == 0 {
+                            //     swapping = 0;
+                            // }
+                            // else {
+                            //     swapping = 1;
+                            // }
+                            // swapping = (hash as uint >> cap_tz) & 1;
+
+                            // (*unsfptr).overwrite_hashed_existing_with(table::SafeHash{hash:hash}, k, v, |_, _| ());
+                            // }
                         }
                         // }
                         // _ => { // empty or in place
@@ -2853,13 +2970,59 @@ mod test_map {
             assert!(m.is_empty());
 
             for i in range_inclusive(1i, 1000) {
+                // let old_m = m.clone();
                 assert!(m.insert(i, i));
 
-                for j in range_inclusive(1, i) {
-                    let r = m.find(&j);
-                    // println!("{}", m);
-                    assert_eq!((r, i), (Some(&j), i));
+                let b = {
+                    let mut v = Vec::new();
+                    for j in range_inclusive(1, i) {
+                        let r = m.find(&j);
+                        v.push(r);
+                        // if r.is_none() {
+                            // println!("{}", m);
+                        // }
+                        // assert_eq!((r, i), (Some(&j), i));
+                    }
+                    let b = v.iter().enumerate().all(|(i, &e)| {e.map(|&e| e) == Some((i + 1) as int)});
+                    if !b {
+                        println!("{}", v);
+                    }
+                    b
+                };
+                // if !b {
+
+    {
+        let cap = m.table.capacity();
+        // let mut triples = items.next().unwrap();
+        // let unsfptr = unsafe{self as *HashMap<K, V, H> as *mut HashMap<K, V, H>};
+        let mut items = unsafe{super::table::TriAryIter::new(m.table.as_mut_slice())};
+        // (*unsfptr).table.set_len(new_capacity >> table::LOG2_CHUNK);
+        // let mut last_empty = false;
+        // let mut cap_tz = cap.trailing_zeros();
+        let mut idx = 0;
+        // let mut swapping = false;
+        // let mut swap_items = items.clone();
+        // let mut swap_triples = mem::uninit();
+
+        println!("has {} spots:", cap);
+        let mut v = Vec::new();
+        for mut triples in items {
+            for bucket in triples {
+                match bucket.hash {
+                    &0u64 => v.push(None),
+                    &full_hash => {
+                        v.push(Some((full_hash as uint & (cap - 1), bucket.key, bucket.val)));
+                    }
                 }
+            }
+            println!("{}", v);
+            v.clear();
+        }
+    }
+                    println!("{}", m);
+                    // println!("good {}", old_m);
+                // }
+                assert!(b);
 
                 for j in range_inclusive(i+1, 1000) {
                     let r = m.find(&j);
