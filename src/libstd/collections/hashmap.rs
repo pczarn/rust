@@ -554,11 +554,18 @@ mod table {
         // }
         #[inline]
         pub fn try_grow(&mut self, new_cap: uint) -> bool {
+            // println!("try_grow {} => {}", self.cap, new_cap)
             let has_reallocated = unsafe {
-                reallocate_inplace(self.ptr as *mut u8,
-                                   new_cap * mem::size_of::<TriAry<K, V>>(),
-                                   mem::min_align_of::<TriAry<K, V>>(),
-                                   self.cap)
+                if self.cap == 0 {
+                    let size = new_cap * mem::size_of::<TriAry<K, V>>();
+                    self.ptr = allocate(size, mem::min_align_of::<TriAry<K, V>>()) as *mut TriAry<K, V>;
+                    true
+                } else {
+                    reallocate_inplace(self.ptr as *mut u8,
+                                       new_cap * mem::size_of::<TriAry<K, V>>(),
+                                       mem::min_align_of::<TriAry<K, V>>(),
+                                       self.cap)
+                }
             };
             if has_reallocated {
                 self.cap = new_cap;
@@ -891,6 +898,73 @@ mod table {
                 self.key = self.key.offset(1);
                 self.val = self.val.offset(1);
                 ret
+            }
+        }
+    }
+
+    pub struct TriArysWrap<'a, K, V> {
+        end: *mut TriAry<K, V>,
+        ptr: *mut TriAry<K, V>,
+        key: *mut TriAry<K, V>,
+        val: *mut TriAry<K, V>,
+        cap: uint,
+        marker: marker::ContravariantLifetime<'a>,
+        // marker2: marker::NoCopy
+    }
+
+    impl<'a, K, V> TriArysWrap<'a, K, V> {
+        pub fn new(slice: &'a mut [TriAry<K, V>], cap: uint) -> TriArysWrap<'a, K, V> {
+            let len = slice.len();
+            unsafe {
+                let ptr = slice.as_mut_ptr();
+                TriArysWrap {
+                    cap: cap,
+                    ptr: ptr,
+                    end: slice.as_mut_ptr().offset(len as int),
+                    key: (*ptr).mut1() as *mut [K, ..CHUNK] as *mut TriAry<K, V>,
+                    val: (*ptr).mut2() as *mut [V, ..CHUNK] as *mut TriAry<K, V>,
+                    marker: marker::ContravariantLifetime,
+                    // marker2: marker::NoCopy
+                }
+            }
+        }
+    }
+
+    impl<'a, K, V> Clone for TriArysWrap<'a, K, V> {
+        fn clone(&self) -> TriArysWrap<'a, K, V> { *self }
+    }
+
+    impl<'a, K, V> Iterator<MutTriVecEntries<'a, K, V>> for TriArysWrap<'a, K, V> {
+        fn next(&mut self) -> Option<MutTriVecEntries<K, V>> {
+            if self.ptr == self.end {
+                if self.cap == 0 {
+                    return None;
+                } else {
+                    let off = -(self.cap as int);
+                    unsafe {
+                        self.ptr = self.ptr.offset(off);
+                        self.key = self.key.offset(off);
+                        self.val = self.val.offset(off);
+                    }
+                    self.cap = 0;
+                }
+            }
+
+            unsafe {
+                // align issue?
+                let next_ptr = self.ptr.offset(1);
+                let r = MutTriVecEntries {
+                    ptr: self.ptr as *mut u64,
+                    keys: self.key as *mut K,
+                    vals: self.val as *mut V,
+                    end: next_ptr as *mut V,
+                    marker: marker::ContravariantLifetime,
+                    // marker2: marker::NoCopy
+                };
+                self.ptr = next_ptr;
+                self.key = self.key.offset(1);
+                self.val = self.val.offset(1);
+                Some(r)
             }
         }
     }
@@ -1414,6 +1488,10 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         let unsfptr = self as *const HashMap<K, V, H>;
         let size = self.table.size();
         let cap = self.table.capacity();
+        if cap == 0 {
+            // TODO
+            return None;
+        }
 
         let full_skipped = (hash.inspect() as uint) & (cap - 1);
         let to_skip = full_skipped & table::CHUNK_MASK;
@@ -1597,24 +1675,46 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         let to_skip = full_skipped & table::CHUNK_MASK;
         let num_skipped = full_skipped >> table::LOG2_CHUNK;
 
-        let mut items = table::TriArysCycle::new(self.table.as_mut_slice().mut_slice_from(num_skipped + 1), cap >> table::LOG2_CHUNK);
+        let full_end = (full_skipped + size) & (cap - 1);
 
+        // let mut items = table::TriArysCycle::new(self.table.as_mut_slice().mut_slice_from(num_skipped + 1), cap >> table::LOG2_CHUNK);
+
+        // let mut triples = unsafe {
+        //     let unsfptr = self as *mut HashMap<K, V, H>;
+        //     table::mut_iter_at((*unsfptr).table.as_mut_slice().unsafe_mut_ref(num_skipped), to_skip)
+        // };
+
+        // for _ in range_inclusive(0u, size) {
+        //     let bucket = match triples.next() {
+        //         Some(bucket) => bucket,
+        //         None => {
+        //             triples = items.get();
+        //             triples.next().unwrap()
+        //         }
+        //     };
+
+        //     match bucket.hash {
+        //         &0u64 => {
+        //             *bucket.hash = hash.inspect();
+        //             unsafe {
+        //                 overwrite(bucket.key, k);
+        //                 overwrite(bucket.val, v);
+        //                 return;
+        //             }
+        //         }
+        //         _ => {}
+        //     }
+        // }
+
+        let mut items = table::TriArysWrap::new(self.table.as_mut_slice().mut_slice_from(num_skipped + 1), cap >> table::LOG2_CHUNK);
         let mut triples = unsafe {
-            let unsfptr = self as *mut HashMap<K, V, H>;
-            table::mut_iter_at((*unsfptr).table.as_mut_slice().unsafe_mut_ref(num_skipped), to_skip)
+            table::mut_iter_at((*(self as *mut HashMap<K, V, H>)).table.as_mut_slice().unsafe_mut_ref(num_skipped), to_skip)
         };
+        // let mut idx = 0;
 
-        for _ in range_inclusive(0u, size) {
-            let bucket = match triples.next() {
-                Some(bucket) => bucket,
-                None => {
-                    triples = items.get();
-                    triples.next().unwrap()
-                }
-            };
-
+        for bucket in triples {
             match bucket.hash {
-                &0u64 => {
+                &0u64 /*if idx >= to_skip*/ => {
                     *bucket.hash = hash.inspect();
                     unsafe {
                         overwrite(bucket.key, k);
@@ -1624,6 +1724,24 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                 }
                 _ => {}
             }
+        }
+
+        for mut triples in items {
+            for bucket in triples {
+                match bucket.hash {
+                    &0u64 /*if idx >= to_skip*/ => {
+                        *bucket.hash = hash.inspect();
+                        unsafe {
+                            overwrite(bucket.key, k);
+                            overwrite(bucket.val, v);
+                            return;
+                        }
+                    }
+                    _ => {}
+                }
+                // idx += 1;
+            }
+            // triples = triples_n;
         }
         // We really shouldn't be here.
         fail!("Internal HashMap error: Out of space.");
@@ -1814,6 +1932,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
         let hash = self.make_hash(&k);
         self.make_some_room(potential_new_size);
 
+        // println!("swap {:?}", self.table)
         let mut ret = None;
         self.overwrite_hashed_existing_with(hash, k, v, |val, val_ref| {
             ret = Some(replace(val_ref, val));
@@ -1830,7 +1949,6 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
 
         let potential_new_size = self.table.size() - 1;
         self.make_some_room(potential_new_size);
-
         let starting_index = match self.search(k) {
             Some(idx) => idx,
             None      => return None,
@@ -1843,7 +1961,17 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
 impl<K: Hash + Eq, V> HashMap<K, V, sip::SipHasher> {
     /// Create an empty HashMap.
     pub fn new() -> HashMap<K, V, sip::SipHasher> {
-        HashMap::with_capacity(INITIAL_CAPACITY)
+        // HashMap::with_capacity(INITIAL_CAPACITY)
+        let mut r = rand::task_rng();
+        let r0 = r.gen();
+        let r1 = r.gen();
+        let hasher = sip::SipHasher::new_with_keys(r0, r1);
+        // HashMap::with_capacity_and_hasher(INITIAL_CAPACITY, hasher)
+        HashMap {
+            hasher:        hasher,
+            resize_policy: DefaultResizePolicy::new(INITIAL_CAPACITY),
+            table:         table::RawTable::new(0),
+        }
     }
 
     /// Creates an empty hash map with the given initial capacity.
@@ -1861,7 +1989,11 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
     ///
     /// The creates map has the default initial capacity.
     pub fn with_hasher(hasher: H) -> HashMap<K, V, H> {
-        HashMap::with_capacity_and_hasher(INITIAL_CAPACITY, hasher)
+        HashMap {
+            hasher:        hasher,
+            resize_policy: DefaultResizePolicy::new(INITIAL_CAPACITY),
+            table:         table::RawTable::new(0),
+        }
     }
 
     /// Create an empty HashMap with space for at least `capacity`
@@ -1910,10 +2042,13 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         let old_table = replace(&mut self.table, table::RawTable::new(new_capacity));
         let old_size  = old_table.size();
 
-        // let mut new_size = 0;
-        for (h, k, v) in old_table.move_iter() {
-            self.overwrite_hashed_existing_with(h, k, v, |_, _| {});
-            self.table.len += 1;
+        if old_table.ptr.is_not_null() {
+            // let mut new_size = 0;
+            for (h, k, v) in old_table.move_iter() {
+                // self.overwrite_hashed_existing_with(h, k, v, |_, _| {});
+                self.insert_first_empty(h, k, v);
+                self.table.len += 1;
+            }
         }
 
         // self.table.size = new_size;
@@ -2001,7 +2136,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         let old_size = self.table.size();
         // println!("growing to {}", new_capacity >> table::LOG2_CHUNK);
         unsafe {
-            ptr::set_memory(self.table.as_mut_ptr().offset(vec_cap as int), 0u8, cap >> table::LOG2_CHUNK);
+            ptr::set_memory(self.table.as_mut_ptr().offset(vec_cap as int), 0u8, (new_capacity - cap) >> table::LOG2_CHUNK);
         }
 
         // let keep_len = self.table.size;
@@ -2290,8 +2425,9 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         // An invalid value shouldn't make us run out of space.
         debug_assert!(grow_at >= new_size);
 
+        // println!("[{}, {}] cap:{}", grow_at, shrink_at, cap)
         if cap <= grow_at {
-            let new_capacity = cap << 1;
+            let new_capacity = max(cap << 1, INITIAL_CAPACITY);
             if !self.table.try_grow(new_capacity >> table::LOG2_CHUNK) {
                 self.resize(new_capacity);
                 return;
@@ -3328,8 +3464,11 @@ mod test_map {
         let mut m = HashMap::new();
 
         assert_eq!(m.len(), 0);
+        assert_eq!(m.table.capacity(), 0);
         assert!(m.is_empty());
 
+        m.insert(0, 0);
+        m.remove(&0);
         let initial_cap = m.table.capacity();
         m.reserve(initial_cap * 2);
         let cap = m.table.capacity();
