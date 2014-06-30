@@ -30,7 +30,7 @@ use result::{Ok, Err};
 use kinds::marker;
 use mem::overwrite;
 use ptr;
-use core::num::Bitwise;
+// use core::num::Bitwise;
 
 use vec::Vec;
 use slice::ImmutableVector;
@@ -338,7 +338,7 @@ mod table {
         pub fn peek(&self, index: uint) -> BucketState {
             // let hashes = unsafe { (*self.chunks.as_ptr().offset((idx as uint >> 3) as int)).ref0() };
             // TODO match all idxs with match?
-            // let hash = unsafe { *(hashes.ref0() as *u64).offset(idx & 7) };
+            // let hash = unsafe { *(hashes.ref0() as *const u64).offset(idx & 7) };
             let (hash, _, _) = unsafe { self.ref_idx(index as int) };
             self.internal_peek(index, *hash)
         }
@@ -348,7 +348,7 @@ mod table {
             let idx  = index as int;
             // let hashes = unsafe { (*self.chunks.as_ptr().offset((idx as uint >> 3) as int)).ref0() };
             // TODO match all idxs with match?
-            // let hash = unsafe { *(hashes.ref0() as *u64).offset(idx & 7) };
+            // let hash = unsafe { *(hashes.ref0() as *const u64).offset(idx & 7) };
 
             let nocopy = marker::NoCopy;
 
@@ -378,14 +378,14 @@ mod table {
             }
         }
 
-        fn ptr_idx<'a>(&'a self, idx: int) -> (*u64, *K, *V) {
+        fn ptr_idx<'a>(&'a self, idx: int) -> (*const u64, *const K, *const V) {
             #![inline(always)]
             let idx = idx as uint;
             unsafe {
                 let &(ref hashes, ref keys, ref vals) = &*self.ptr.offset((idx >> LOG2_CHUNK) as int);
-                (&'a hashes[idx & CHUNK_MASK] as *u64,
-                 &'a keys[idx & CHUNK_MASK] as *K,
-                 &'a vals[idx & CHUNK_MASK] as *V)
+                (&'a hashes[idx & CHUNK_MASK] as *const u64,
+                 &'a keys[idx & CHUNK_MASK] as *const K,
+                 &'a vals[idx & CHUNK_MASK] as *const V)
             }
         }
 
@@ -427,8 +427,8 @@ mod table {
             unsafe {
                 let &(ref hashes, ref keys, ref vals) = &*self.ptr.offset((idx >> LOG2_CHUNK) as int);
                 debug_assert!(hashes[idx & CHUNK_MASK] != EMPTY_BUCKET);
-                // (&'a *(keys.ref0() as *K).offset(idx & 7),
-                 // &'a *(vals.ref0() as *V).offset(idx & 7))
+                // (&'a *(keys.ref0() as *const K).offset(idx & 7),
+                 // &'a *(vals.ref0() as *const V).offset(idx & 7))
                 (&'a keys[idx & CHUNK_MASK],
                  &'a vals[idx & CHUNK_MASK])
 
@@ -515,8 +515,8 @@ mod table {
                 // let keys = keys as *const K;
                 // let vals = vals as *const V;
 
-                let k = ptr::read((keys.ref0() as *const K).offset(idx & 7));
-                let v = ptr::read((vals.ref0() as *const V).offset(idx & 7));
+                let k = ptr::read(key);
+                let v = ptr::read(val);
                 (EmptyIndex { idx: idx, nocopy: marker::NoCopy }, k, v)
             };
 
@@ -570,21 +570,21 @@ mod table {
             self.ptr
         }
 
-        pub fn as_ptr(&self) -> *TriAry<K, V> {
-            self.ptr as *TriAry<K, V>
+        pub fn as_ptr(&self) -> *const TriAry<K, V> {
+            self.ptr as *const TriAry<K, V>
         }
 
         #[inline]
         pub fn as_slice<'a>(&'a self) -> &'a [TriAry<K, V>] {
             unsafe {
-                mem::transmute(Slice { data: self.as_mut_ptr() as *TriAry<K, V>, len: self.cap })
+                mem::transmute(Slice { data: self.as_mut_ptr() as *const TriAry<K, V>, len: self.cap })
             }
         }
 
         #[inline]
         pub fn as_mut_slice<'a>(&'a mut self) -> &'a mut [TriAry<K, V>] {
             unsafe {
-                mem::transmute(Slice { data: self.as_mut_ptr() as *TriAry<K, V>, len: self.cap })
+                mem::transmute(Slice { data: self.as_mut_ptr() as *const TriAry<K, V>, len: self.cap })
             }
         }
 
@@ -609,7 +609,7 @@ mod table {
         }
 
         pub fn move_iter(mut self) -> MoveEntries<K, V> {
-            MoveEntries { table: self, idx: 0, elems_seen: 0 }
+            MoveEntries { table: self, idx: 0 }
             // let mut items = unsafe { transmute(TriAryIter::new(self.as_mut_slice())) };
             // MoveEntries {
             //     table: self,
@@ -625,16 +625,16 @@ mod table {
         }
 
         pub fn iter_from<'a>(&'a self, from: uint, to_skip: uint) -> TriVecEntries<K, V> {
-            let elem_ptr = unsafe { self.ptr.offset(from as int) as *TriAry<K, V> };
+            let elem_ptr = unsafe { self.ptr.offset(from as int) as *const TriAry<K, V> };
             let &(ref hsh, ref key, ref val) = unsafe { &*elem_ptr };
-            let ptr = hsh as *u64;
-            let valptr = val as *V;
+            let ptr = hsh as *const u64;
+            let valptr = val as *const V;
             let off = to_skip as int;
             TriVecEntries {
                 ptr: unsafe { ptr.offset(off) },
-                keys: unsafe { (key as *K).offset(off) },
+                keys: unsafe { (key as *const K).offset(off) },
                 vals: unsafe { valptr.offset(off) },
-                end: unsafe { (elem_ptr.offset(1)).offset(1) } as *V, //align issue?
+                end: unsafe { (elem_ptr.offset(1)).offset(1) } as *const V, //align issue?
                 marker: marker::ContravariantLifetime,
                 // marker2: marker::NoCopy,
             }
@@ -665,12 +665,12 @@ mod table {
 
     pub fn mut_iter<'a, K, V>(this: &'a mut TriAry<K, V>) -> MutTriVecEntries<'a, K, V> {
         let &(ref mut hsh, ref mut key, ref mut val) = this;
-        let ptr = hsh as *mut u64;
-        let valptr = val as *mut V;
+        let ptr = hsh as *mut [u64, ..CHUNK] as *mut u64;
+        let valptr = val as *mut [V, ..CHUNK] as *mut V;
         MutTriVecEntries {
             ptr: ptr,
             // end: unsafe { ptr.offset(CHUNK as int) },
-            keys: key as *mut K,
+            keys: key as *mut [K, ..CHUNK] as *mut K,
             vals: valptr,
             end: unsafe { (this as *mut TriAry<K, V>).offset(1) } as *mut V, //align issue?
             marker: marker::ContravariantLifetime,
@@ -680,14 +680,14 @@ mod table {
 
     pub fn iter_at<'a, K, V>(this: &'a TriAry<K, V>, to_skip: int) -> TriVecEntries<'a, K, V> {
         let &(ref hsh, ref key, ref val) = this;
-        let ptr = hsh as *u64;
-        let valptr = val as *V;
+        let ptr = hsh as *const u64;
+        let valptr = val as *const V;
         let off = to_skip as int;
         TriVecEntries {
             ptr: unsafe { ptr.offset(off) },
-            keys: unsafe { (key as *K).offset(off) },
+            keys: unsafe { (key as *const K).offset(off) },
             vals: unsafe { valptr.offset(off) },
-            end: unsafe { (this as *TriAry<K, V>).offset(1) } as *V, //align issue?
+            end: unsafe { (this as *const TriAry<K, V>).offset(1) } as *const V, //align issue?
             marker: marker::ContravariantLifetime,
             // marker2: marker::NoCopy,
         }
@@ -695,12 +695,12 @@ mod table {
 
     pub fn mut_iter_at<'a, K, V>(this: &'a mut TriAry<K, V>, to_skip: uint) -> MutTriVecEntries<'a, K, V> {
         let &(ref mut hsh, ref mut key, ref mut val) = this;
-        let ptr = hsh as *mut u64;
-        let valptr = val as *mut V;
+        let ptr = hsh as *mut [u64, ..CHUNK] as *mut u64;
+        let valptr = val as *mut [V, ..CHUNK] as *mut V;
         let off = to_skip as int;
         MutTriVecEntries {
             ptr: unsafe { ptr.offset(off) },
-            keys: unsafe { (key as *mut K).offset(off) },
+            keys: unsafe { (key as *mut [K, ..CHUNK] as *mut K).offset(off) },
             vals: unsafe { valptr.offset(off) },
             end: unsafe { (this as *mut TriAry<K, V>).offset(1) } as *mut V, //align issue?
             marker: marker::ContravariantLifetime,
@@ -709,10 +709,10 @@ mod table {
     }
 
     pub struct TriVecEntries<'a, K, V> {
-        ptr: *u64,
-        keys: *K,
-        vals: *V,
-        end: *V,
+        ptr: *const u64,
+        keys: *const K,
+        vals: *const V,
+        end: *const V,
         marker: marker::ContravariantLifetime<'a>,
         // marker2: marker::NoCopy
     }
@@ -896,10 +896,10 @@ mod table {
     }
 
     pub struct ImmTriArysCycle<'a, K, V> {
-        end: *TriAry<K, V>,
-        ptr: *TriAry<K, V>,
-        key: *TriAry<K, V>,
-        val: *TriAry<K, V>,
+        end: *const TriAry<K, V>,
+        ptr: *const TriAry<K, V>,
+        key: *const TriAry<K, V>,
+        val: *const TriAry<K, V>,
         cap: uint,
         marker: marker::ContravariantLifetime<'a>,
         // marker2: marker::NoCopy
@@ -918,8 +918,8 @@ mod table {
                     cap: cap,
                     ptr: ptr,
                     end: slice.as_ptr().offset(len as int),
-                    key: (*ptr).ref1() as *[K, ..CHUNK] as *TriAry<K, V>,
-                    val: (*ptr).ref2() as *[V, ..CHUNK] as *TriAry<K, V>,
+                    key: (*ptr).ref1() as *const [K, ..CHUNK] as *const TriAry<K, V>,
+                    val: (*ptr).ref2() as *const [V, ..CHUNK] as *const TriAry<K, V>,
                     marker: marker::ContravariantLifetime,
                     // marker2: marker::NoCopy
                 }
@@ -942,10 +942,10 @@ mod table {
                 // align issue?
                 let next_ptr = self.ptr.offset(1);
                 let ret = TriVecEntries {
-                    ptr: self.ptr as *u64,
-                    keys: self.key as *K,
-                    vals: self.val as *V,
-                    end: next_ptr as *V,
+                    ptr: self.ptr as *const u64,
+                    keys: self.key as *const K,
+                    vals: self.val as *const V,
+                    end: next_ptr as *const V,
                     // end: (self.ptr as *mut u64)
                     marker: marker::ContravariantLifetime,
                     // marker2: marker::NoCopy
@@ -958,7 +958,7 @@ mod table {
         }
     }
 
-    // `read_all_mut` casts a `*u64` to a `*SafeHash`. Since we statically
+    // `read_all_mut` casts a `*const u64` to a `*SafeHash`. Since we statically
     // ensure that a `FullIndex` points to an index with a non-zero hash,
     // and a `SafeHash` is just a `u64` with a different name, this is
     // safe.
@@ -1086,8 +1086,8 @@ mod table {
             //     match bucket.hash {
             //         &0u64 => {} // empty or in place
             //         &full_hash => unsafe {
-            //             let k = ptr::read(bucket.key as *mut K as *K);
-            //             let v = ptr::read(bucket.val as *mut V as *V);
+            //             let k = ptr::read(bucket.key as *mut K as *const K);
+            //             let v = ptr::read(bucket.val as *mut V as *const V);
 
             //             let hash = *bucket.hash;
             //             *bucket.hash = 0u64;
@@ -1411,7 +1411,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
     /// Search for a pre-hashed key.
     fn search_hashed_generic(&self, hash: &table::SafeHash, is_match: |&K| -> bool)
         -> Option<table::FullIndex> {
-        let unsfptr = self as *HashMap<K, V, H>;
+        let unsfptr = self as *const HashMap<K, V, H>;
         let size = self.table.size();
         let cap = self.table.capacity();
 
@@ -1961,8 +1961,8 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
     //         //             0u => {} // empty or in place
     //         //             _ => {
     //         //                 // Put it where it would have been
-    //         //                 let k = ptr::read(bucket.key as *mut K as *K);
-    //         //                 let v = ptr::read(bucket.val as *mut V as *V);
+    //         //                 let k = ptr::read(bucket.key as *mut K as *const K);
+    //         //                 let v = ptr::read(bucket.val as *mut V as *const V);
 
     //         //                 let hash = *bucket.hash;
     //         //                 *bucket.hash = 0u64;
@@ -2030,7 +2030,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
             // (*unsfptr).table.set_len(new_capacity >> table::LOG2_CHUNK);
             // let mut last_empty = false;
             let mut cap_tz = cap.trailing_zeros();
-            let mut idx = 0;
+            let mut idx = 0u;
             // let mut swapping = false;
             // let mut swap_items = items.clone();
             // let mut swap_triples = mem::uninit();
@@ -2049,8 +2049,8 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                             //     idx += 1;
                             //     continue;
                             // }
-                            let k = ptr::read(bucket.key as *mut K as *K);
-                            let v = ptr::read(bucket.val as *mut V as *V);
+                            let k = ptr::read(bucket.key as *mut K as *const K);
+                            let v = ptr::read(bucket.val as *mut V as *const V);
 
                             let hash = replace(bucket.hash, 0u64);
                             // if swapping == 1 {
@@ -2182,8 +2182,8 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
             //                 // last_empty = false;
             //                 //-----
             //                 if full_hash as uint & cap == cap {
-            //                     let k = ptr::read(bucket.key as *mut K as *K);
-            //                     let v = ptr::read(bucket.val as *mut V as *V);
+            //                     let k = ptr::read(bucket.key as *mut K as *const K);
+            //                     let v = ptr::read(bucket.val as *mut V as *const V);
 
             //                     let hash = replace(bucket.hash, 0u64);
             //                     (*unsfptr).overwrite_hashed_existing_with(table::SafeHash{hash:hash}, k, v, |_, _| ());
@@ -2202,8 +2202,8 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
             //                 //                 swap_triples.next().unwrap()
             //                 //             }
             //                 //         };
-            //                 //         let k = ptr::read(bucket.key as *mut K as *K);
-            //                 //         let v = ptr::read(bucket.val as *mut V as *V);
+            //                 //         let k = ptr::read(bucket.key as *mut K as *const K);
+            //                 //         let v = ptr::read(bucket.val as *mut V as *const V);
 
             //                 //         *swap_bucket.hash = *bucket.hash;
             //                 //         *bucket.hash = 0u64;
@@ -2216,8 +2216,8 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
             //                 // }
             //                 //-----
             //                 // if full_hash as uint & cap == cap {
-            //                 //     let k = ptr::read(bucket.key as *mut K as *K);
-            //                 //     let v = ptr::read(bucket.val as *mut V as *V);
+            //                 //     let k = ptr::read(bucket.key as *mut K as *const K);
+            //                 //     let v = ptr::read(bucket.val as *mut V as *const V);
 
             //                 //     let hash = replace(bucket.hash, 0u64);
             //                 //     (*unsfptr).overwrite_hashed_existing_with(table::SafeHash{hash:hash}, k, v, |_, _| ());
@@ -2243,8 +2243,8 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
             //                 //                     continue
             //                 //                 }
             //                 //                 else {
-            //                 //                     let k = ptr::read(swap_bucket.key as *mut K as *K);
-            //                 //                     let v = ptr::read(swap_bucket.val as *mut V as *V);
+            //                 //                     let k = ptr::read(swap_bucket.key as *mut K as *const K);
+            //                 //                     let v = ptr::read(swap_bucket.val as *mut V as *const V);
             //                 //                     *bucket.hash = replace(swap_bucket.hash, 0u64);
             //                 //                     overwrite(bucket.key, k);
             //                 //                     overwrite(bucket.val, v);
@@ -2263,8 +2263,8 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
             //                 //                 swap_triples.next().unwrap()
             //                 //             }
             //                 //         };
-            //                 //         let k = ptr::read(bucket.key as *mut K as *K);
-            //                 //         let v = ptr::read(bucket.val as *mut V as *V);
+            //                 //         let k = ptr::read(bucket.key as *mut K as *const K);
+            //                 //         let v = ptr::read(bucket.val as *mut V as *const V);
 
             //                 //         *swap_bucket.hash = *bucket.hash;
             //                 //         *bucket.hash = 0u64;
@@ -2310,8 +2310,8 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                         match bucket.hash {
                             &0u64 => {}
                             &full_hash => {
-                                let k = ptr::read(bucket.key as *mut K as *K);
-                                let v = ptr::read(bucket.val as *mut V as *V);
+                                let k = ptr::read(bucket.key as *mut K as *const K);
+                                let v = ptr::read(bucket.val as *mut V as *const V);
                                 (*unsfptr).overwrite_hashed_existing_with(table::SafeHash{hash:full_hash}, k, v, |_, _| ());
                                 *bucket.hash = 0u64;
                             }
@@ -2581,7 +2581,7 @@ impl<K: Eq + Hash<S>, V: PartialEq, S, H: Hasher<S>> PartialEq for HashMap<K, V,
 
 //         for (i, (k, v)) in self.iter().enumerate() {
 //             if i != 0 { try!(write!(f, ", ")); }
-//             try!(write!(f, "{}: {}", *k, *v));
+//             try!(write!(f, "{}: {}", *const K, *const V));
 //         }
 
 //         write!(f, r"\}")
@@ -2854,9 +2854,9 @@ mod test_map {
 
     #[test]
     fn test_create_capacity_zero() {
-        let mut m = HashMap::with_capacity(0);
+        let mut m = HashMap::with_capacity(0u);
 
-        assert!(m.insert(1, 1));
+        assert!(m.insert(1i, 1i));
         // println!("{:?}", m);
         // println!("{}", m.table.chunks);
 
@@ -2999,27 +2999,27 @@ mod test_map {
         // (*unsfptr).table.set_len(new_capacity >> table::LOG2_CHUNK);
         // let mut last_empty = false;
         // let mut cap_tz = cap.trailing_zeros();
-        let mut idx = 0;
+        let mut idx = 0u;
         // let mut swapping = false;
         // let mut swap_items = items.clone();
         // let mut swap_triples = mem::uninit();
 
-        println!("has {} spots:", cap);
-        let mut v = Vec::new();
-        for mut triples in items {
-            for bucket in triples {
-                match bucket.hash {
-                    &0u64 => v.push(None),
-                    &full_hash => {
-                        v.push(Some((full_hash as uint & (cap - 1), bucket.key, bucket.val)));
-                    }
-                }
-            }
-            println!("{}", v);
-            v.clear();
-        }
+        // println!("has {} spots:", cap);
+        // let mut v = Vec::new();
+        // for mut triples in items {
+        //     for bucket in triples {
+        //         match bucket.hash {
+        //             &0u64 => v.push(None),
+        //             &full_hash => {
+        //                 v.push(Some((full_hash as uint & (cap - 1), bucket.key, bucket.val)));
+        //             }
+        //         }
+        //     }
+        //     println!("{}", v);
+        //     v.clear();
+        // }
     }
-                    println!("{}", m);
+    // println!("{}", m);
                     // println!("good {}", old_m);
                 // }
                 assert!(b);

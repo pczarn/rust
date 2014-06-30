@@ -13,7 +13,7 @@
  */
 
 #![feature(macro_rules, globs, asm, managed_boxes, thread_local, link_args,
-           linkage, default_type_params, phase, concat_idents, quad_precision_float)]
+           linkage, default_type_params, phase, concat_idents, unsafe_destructor)]
 
 #![allow(deprecated)]
 #![deny(missing_doc)]
