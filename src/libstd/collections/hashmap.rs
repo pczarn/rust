@@ -839,6 +839,79 @@ mod table {
         }
     }
 
+    pub struct TriAryEntriesCount<'a, K, V> {
+        seg_end: *mut TriAry<K, V>,
+        seg_ptr: *mut TriAry<K, V>,
+        seg_key: *mut TriAry<K, V>,
+        seg_val: *mut TriAry<K, V>,
+        cap: uint,
+        ptr:  *mut u64,
+        keys: *mut K,
+        vals: *mut V,
+        marker: marker::ContravariantLifetime<'a>,
+        // marker2: marker::NoCopy
+    }
+
+    impl<'a, K, V> Clone for TriAryEntriesCount<'a, K, V> {
+        fn clone(&self) -> TriAryEntriesCount<'a, K, V> { *self }
+    }
+
+    impl<'a, K, V> TriAryEntriesCount<'a, K, V> {
+        pub fn new(slice: &'a mut [TriAry<K, V>], skip: uint, cap: uint) -> TriAryEntriesCount<'a, K, V> {
+            let len = slice.len();
+            unsafe {
+                let ptr = slice.as_mut_ptr();
+                let keys = (*ptr).mut1() as *mut [K, ..CHUNK] as *mut K;
+                let vals = (*ptr).mut2() as *mut [V, ..CHUNK] as *mut V;
+
+                // println!("{} cap:{}", skip, cap)
+                TriAryEntriesCount {
+                    cap: cap,
+                    seg_ptr: ptr.offset(1),
+                    seg_end: ptr.offset(len as int),
+                    seg_key: (keys as *mut TriAry<K, V>).offset(1),
+                    seg_val: (vals as *mut TriAry<K, V>).offset(1),
+                    ptr:  ((*ptr).mut0() as *mut [u64, ..CHUNK] as *mut u64).offset(skip as int),
+                    keys: keys.offset(skip as int),
+                    vals: vals.offset(skip as int),
+                    marker: marker::ContravariantLifetime,
+                    // marker2: marker::NoCopy
+                }
+            }
+        }
+
+        pub fn get(&mut self) -> Bucket<'a, K, V> {
+            if self.vals >= self.seg_ptr as *mut V {
+                if self.seg_ptr == self.seg_end {
+                    let off = -(self.cap as int);
+                    unsafe {
+                        self.seg_ptr = self.seg_ptr.offset(off);
+                        self.seg_key = self.seg_key.offset(off);
+                        self.seg_val = self.seg_val.offset(off);
+                    }
+                }
+
+                unsafe {
+                    self.ptr = self.seg_ptr as *mut u64;
+                    self.keys = self.seg_key as *mut K;
+                    self.vals = self.seg_val as *mut V;
+                    self.seg_ptr = self.seg_ptr.offset(1);
+                    self.seg_key = self.seg_key.offset(1);
+                    self.seg_val = self.seg_val.offset(1);
+                }
+            }
+
+            unsafe {
+                let bucket = (self.ptr, self.keys, self.vals);
+                self.ptr = self.ptr.offset(1);
+                self.keys = self.keys.offset(1);
+                self.vals = self.vals.offset(1);
+                // println!("{:?}", bucket)
+                transmute(bucket)
+            }
+        }
+    }
+
     pub struct TriArysCycle<'a, K, V> {
         end: *mut TriAry<K, V>,
         ptr: *mut TriAry<K, V>,
@@ -1411,7 +1484,6 @@ pub fn bucket_dib(raw_index: uint, hash: u64, cap: uint) -> uint {
     // where the hash of the element that happens to reside at
     // `index_of_elem` tried to place itself first.
     // let first_probe_index = self.probe(&index_of_elem.hash(), 0);
-    let hash_mask = cap - 1;
 
     // // So I heard a rumor that unsigned overflow is safe in rust..
     // let first_probe_index = (hash as uint) & hash_mask;
@@ -1428,7 +1500,7 @@ pub fn bucket_dib(raw_index: uint, hash: u64, cap: uint) -> uint {
     //     // probe wrapped around the hashtable
     //     raw_index + (cap - first_probe_index)
     // }
-    ((raw_index | cap) - (hash as uint & hash_mask)) & hash_mask
+    (raw_index - hash as uint) & (cap - 1)
 }
 
 impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
@@ -1858,8 +1930,8 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         fail!("Internal HashMap error: Out of space.");
     }
 
-    fn overwrite_hashed_existing_with(&mut self, hash: table::SafeHash, k: K, v: V,
-    already_exists: |V, &mut V|) -> &mut V {
+    fn overwrite_hashed_existing_with<'a>(&'a mut self, hash: table::SafeHash, k: K, v: V,
+    already_exists: |V, &mut V|) -> &'a mut V {
         let size = self.table.size();
         let cap = self.table.capacity();
 
@@ -1867,23 +1939,18 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         let to_skip = full_skipped & table::CHUNK_MASK;
         let num_skipped = full_skipped >> table::LOG2_CHUNK;
 
-        let mut items = table::TriArysCycle::new(self.table.as_mut_slice().mut_slice_from(num_skipped + 1), cap >> table::LOG2_CHUNK);
+        let mut items = table::TriAryEntriesCount::new(self.table.as_mut_slice().mut_slice_from(num_skipped), to_skip, cap >> table::LOG2_CHUNK);
 
-        let mut triples = unsafe {
-            let unsfptr = self as *mut HashMap<K, V, H>;
-            table::mut_iter_at((*unsfptr).table.as_mut_slice().unsafe_mut_ref(num_skipped), to_skip)
-        };
+        // let mut triples = unsafe {
+        //     let unsfptr = self as *mut HashMap<K, V, H>;
+        //     table::mut_iter_at((*unsfptr).table.as_mut_slice().unsafe_mut_ref(num_skipped), to_skip)
+        // };
 
+        // println!("overwrite {}", size);
         for dib in range_inclusive(0u, size) {
         // for dib in range_inclusive(0u, size) {
             // let idx = (dib + full_skipped) & (cap - 1);
-            let bucket = match triples.next() {
-                Some(bucket) => bucket,
-                None => {
-                    triples = items.get();
-                    triples.next().unwrap()
-                }
-            };
+            let bucket = items.get();
 
             match bucket.hash {
                 &0u64 => {
@@ -1933,16 +2000,9 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                             };
 
                             let mut items_clone = items.clone();
-                            let mut triples_clone = triples.clone();
 
                             for dib in range(dib_param + 1, size) {
-                                let bucket = match triples_clone.next() {
-                                    Some(bucket) => bucket,
-                                    None => {
-                                        triples_clone = items_clone.get();
-                                        triples_clone.next().unwrap()
-                                    }
-                                };
+                                let bucket =  items_clone.get();
 
                                 match bucket.hash {
                                     &0u64 => {
@@ -1965,7 +2025,6 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                                             k = old_key;
                                             v = old_val;
                                             items = items_clone;
-                                            triples = triples_clone;
                                             continue 'outer;
                                         }
                                     }
@@ -2639,7 +2698,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         let mut potential_new_size = self.table.len + 1;
         self.make_some_room(potential_new_size);
         let retval = self.overwrite_hashed_existing_with(hash, k, v, |_, _| potential_new_size -= 1);
-        self.table.len = potential_new_size;
+        unsafe {(*(self as *mut HashMap<K,V,H>)).table.len = potential_new_size;}
         retval
     }
 
@@ -3968,6 +4027,7 @@ mod bench {
             m.insert(k + 1000, k + 1000);
             k += 1;
         });
+        // println!("{}", k);
     }
 
     #[bench]
@@ -3988,7 +4048,8 @@ mod bench {
             m.pop(&k);
             m.insert(k + 1000, k + 1000);
             k += 1;
-        })
+        });
+        // println!("{}", k);
     }
 
     #[bench]
