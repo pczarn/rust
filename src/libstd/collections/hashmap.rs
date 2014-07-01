@@ -839,6 +839,79 @@ mod table {
         }
     }
 
+    pub struct TriAryEntriesWrap<'a, K, V> {
+        seg_end: *const TriAry<K, V>,
+        seg_ptr: *const TriAry<K, V>,
+        seg_key: *const TriAry<K, V>,
+        seg_val: *const TriAry<K, V>,
+        cap: uint,
+        ptr:  *const u64,
+        keys: *const K,
+        vals: *const V,
+        marker: marker::ContravariantLifetime<'a>,
+        // marker2: marker::NoCopy
+    }
+
+    impl<'a, K, V> Clone for TriAryEntriesWrap<'a, K, V> {
+        fn clone(&self) -> TriAryEntriesWrap<'a, K, V> { *self }
+    }
+
+    impl<'a, K, V> TriAryEntriesWrap<'a, K, V> {
+        pub fn new(slice: &'a [TriAry<K, V>], skip: uint, cap: uint) -> TriAryEntriesWrap<'a, K, V> {
+            let len = slice.len();
+            unsafe {
+                let ptr = slice.as_ptr();
+                let keys = (*ptr).ref1() as *const [K, ..CHUNK] as *const K;
+                let vals = (*ptr).ref2() as *const [V, ..CHUNK] as *const V;
+
+                // println!("{} cap:{}", skip, cap)
+                TriAryEntriesWrap {
+                    cap: cap,
+                    seg_ptr: ptr.offset(1),
+                    seg_end: ptr.offset(len as int),
+                    seg_key: (keys as *const TriAry<K, V>).offset(1),
+                    seg_val: (vals as *const TriAry<K, V>).offset(1),
+                    ptr:  ((*ptr).ref0() as *const [u64, ..CHUNK] as *const u64).offset(skip as int),
+                    keys: keys.offset(skip as int),
+                    vals: vals.offset(skip as int),
+                    marker: marker::ContravariantLifetime,
+                    // marker2: marker::NoCopy
+                }
+            }
+        }
+
+        pub fn get(&mut self) -> Bucket<'a, K, V> {
+            if self.vals >= self.seg_ptr as *const V {
+                if self.seg_ptr == self.seg_end {
+                    let off = -(self.cap as int);
+                    unsafe {
+                        self.seg_ptr = self.seg_ptr.offset(off);
+                        self.seg_key = self.seg_key.offset(off);
+                        self.seg_val = self.seg_val.offset(off);
+                    }
+                }
+
+                unsafe {
+                    self.ptr = self.seg_ptr as *const u64;
+                    self.keys = self.seg_key as *const K;
+                    self.vals = self.seg_val as *const V;
+                    self.seg_ptr = self.seg_ptr.offset(1);
+                    self.seg_key = self.seg_key.offset(1);
+                    self.seg_val = self.seg_val.offset(1);
+                }
+            }
+
+            unsafe {
+                let bucket = (self.ptr, self.keys, self.vals);
+                self.ptr = self.ptr.offset(1);
+                self.keys = self.keys.offset(1);
+                self.vals = self.vals.offset(1);
+                // println!("{:?}", bucket)
+                transmute(bucket)
+            }
+        }
+    }
+
     pub struct TriAryEntriesCount<'a, K, V> {
         seg_end: *mut TriAry<K, V>,
         seg_ptr: *mut TriAry<K, V>,
@@ -1607,63 +1680,57 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         let to_skip = full_skipped & table::CHUNK_MASK;
         let num_skipped = full_skipped >> table::LOG2_CHUNK;
 
-        let mut it = unsafe {
-            // table::iter_at((*unsfptr).table.chunks.as_slice().unsafe_ref(num_skipped), to_skip)
-            self.table.iter_from(num_skipped, to_skip)
-        };
-        let limit = (num_skipped + 1) << table::LOG2_CHUNK;
-        // let limit = (full_skipped & !table::CHUNK_MASK) + table::CHUNK;
-        let mut idxs = range(full_skipped, limit);
-        for (idx, (hsh, key, val)) in idxs.zip(it) {
-            match hsh {
+        // let mut it = unsafe {
+        //     // table::iter_at((*unsfptr).table.chunks.as_slice().unsafe_ref(num_skipped), to_skip)
+        //     self.table.iter_from(num_skipped, to_skip)
+        // };
+        // let limit = (num_skipped + 1) << table::LOG2_CHUNK;
+        // // let limit = (full_skipped & !table::CHUNK_MASK) + table::CHUNK;
+        // let mut idxs = range(full_skipped, limit);
+        // for (idx, (hsh, key, val)) in idxs.zip(it) {
+        //     match hsh {
+        //         &0u64 => {
+        //             return None; // hit an empty bucket
+        //         }
+        //         &full_hash => {
+        //             // We can finish the search early if we hit any bucket
+        //             // opt? shorter find_nonexisting, longer find_existing
+        //             // if bucket_dib(idx, full_hash, cap) < idx - full_skipped {
+        //             //     return None;
+        //             // }
+        //             if full_hash != hash.inspect() {
+        //                 continue
+        //             }
+
+        //             if is_match(key) {
+        //                 return Some(table::FullIndex{idx:idx as int,hash: table::SafeHash{hash:full_hash},nocopy: marker::NoCopy,});
+        //             }
+        //         }
+        //     }
+        // }
+
+        let mut items = table::TriAryEntriesWrap::new(self.table.as_slice().slice_from(num_skipped), to_skip, cap >> table::LOG2_CHUNK);
+        // let mut triples = items.get();
+
+        // let dib_idx = limit-(table::CHUNK - to_skip);
+        for idx in range_inclusive(full_skipped, full_skipped + size) {
+            let bucket = items.get();
+
+            match bucket.hash {
                 &0u64 => {
                     return None; // hit an empty bucket
                 }
                 &full_hash => {
                     // We can finish the search early if we hit any bucket
-                    // opt? shorter find_nonexisting, longer find_existing
-                    // if bucket_dib(idx, full_hash, cap) < idx - full_skipped {
-                    //     return None;
-                    // }
-                    if full_hash != hash.inspect() {
-                        continue
-                    }
-
-                    if is_match(key) {
-                        return Some(table::FullIndex{idx:idx as int,hash: table::SafeHash{hash:full_hash},nocopy: marker::NoCopy,});
-                    }
-                }
-            }
-        }
-
-        let mut items = table::ImmTriArysCycle::new(self.table.as_slice().slice_from(num_skipped + 1), cap >> table::LOG2_CHUNK);
-        let mut triples = items.get();
-
-        let dib_idx = limit-(table::CHUNK - to_skip);
-        for dib in range_inclusive(table::CHUNK - to_skip, size) {
-            let (hsh, key, val) = match triples.next() {
-                Some(t) => t,
-                None => {
-                    triples = items.get();
-                    triples.next().unwrap()
-                }
-            };
-
-            match hsh {
-                &0u64 => {
-                    return None; // hit an empty bucket
-                }
-                &full_hash => {
-                    // We can finish the search early if we hit any bucket
-                    if bucket_dib(dib + dib_idx, full_hash, cap) < dib {
+                    if bucket_dib(idx, full_hash, cap) + full_skipped < idx {
                         return None;
                     }
                     if full_hash != hash.inspect() {
                         continue
                     }
 
-                    if is_match(key) {
-                        return Some(table::FullIndex{idx:((dib + dib_idx)&(cap - 1)) as int,hash: table::SafeHash{hash:full_hash},nocopy: marker::NoCopy,});
+                    if is_match(bucket.key) {
+                        return Some(table::FullIndex{idx:(idx&(cap - 1)) as int,hash: table::SafeHash{hash:full_hash},nocopy: marker::NoCopy,});
                     }
                 }
             }
@@ -1927,7 +1994,6 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         //     }
         // }
 
-        let mut items = table::TriArysWrap::new(self.table.as_mut_slice().mut_slice_from(num_skipped + 1), cap >> table::LOG2_CHUNK);
         let mut triples = unsafe {
             table::mut_iter_at((*(self as *mut HashMap<K, V, H>)).table.as_mut_slice().unsafe_mut_ref(num_skipped), to_skip)
         };
@@ -1946,6 +2012,8 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                 _ => {}
             }
         }
+
+        let mut items = table::TriArysWrap::new(self.table.as_mut_slice().mut_slice_from(num_skipped + 1), cap >> table::LOG2_CHUNK);
 
         for mut triples in items {
             for bucket in triples {
