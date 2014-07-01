@@ -1984,16 +1984,9 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         //     table::mut_iter_at((*unsfptr).table.as_mut_slice().unsafe_mut_ref(num_skipped), to_skip)
         // };
 
-        // println!("overwrite {}", size);
-        let mut dib = 0u;
-        loop {
-        // for dib in range_inclusive(0u, size) {
+        for dib in range_inclusive(0u, size) {
             // let idx = (dib + full_skipped) & (cap - 1);
-            // let bucket = items.get();
-            let bucket = match items.next() {
-                Some(it) => it,
-                None => break
-            };
+            let bucket = items.get();
 
             match bucket.hash {
                 &0u64 => {
@@ -2044,13 +2037,8 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
 
                             let mut items_clone = items.clone();
 
-                            let mut dib = dib_param + 1;
-                            loop {
-                                let bucket = match items_clone.next() {
-                                    Some(it) => it,
-                                    None => break
-                                };
-                                // let bucket =  items _clone.get();
+                            for dib in range(dib_param + 1, size) {
+                                let bucket = items_clone.get();
 
                                 match bucket.hash {
                                     &0u64 => {
@@ -2077,7 +2065,6 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                                         }
                                     }
                                 }
-                                dib += 1;
                             }
 
                             fail!("HashMap fatal error: 100% load factor?");
@@ -2094,7 +2081,6 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                     // }
                 }
             }
-            dib += 1;
         }
         // We really shouldn't be here.
         fail!("Internal HashMap error: Out of space.");
