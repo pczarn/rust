@@ -1874,7 +1874,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
             table::mut_iter_at((*unsfptr).table.as_mut_slice().unsafe_mut_ref(num_skipped), to_skip)
         };
 
-        for (dib, idx) in range_inclusive(0u, size).zip(range_inclusive(full_skipped, full_skipped + size)) {
+        for dib in range_inclusive(0u, size) {
         // for dib in range_inclusive(0u, size) {
             // let idx = (dib + full_skipped) & (cap - 1);
             let bucket = match triples.next() {
@@ -2566,6 +2566,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                     }
                 }
             }
+            self.table.cap = cap >> table::LOG2_CHUNK; // ?
             self.table.shrink_to(new_capacity);
             // self.table.size = keep_len;
         }
