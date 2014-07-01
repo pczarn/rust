@@ -755,8 +755,8 @@ mod table {
 
     pub struct MutTriVecEntries<'a, K, V> {
         pub ptr: *mut u64,
-        keys: *mut K,
-        vals: *mut V,
+        pub keys: *mut K,
+        pub vals: *mut V,
         end: *mut V,
         marker: marker::ContravariantLifetime<'a>,
         // marker2: marker::NoCopy
@@ -1578,74 +1578,185 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
 
     fn pop_internal(&mut self, starting_index: table::FullIndex) -> Option<V> {
         let starting_probe = starting_index.raw_index();
+        let size =  self.table.size();
+        let cap = self.table.capacity();
+        // let full_skipped = (starting_probe as uint) & (cap - 1);
 
-        let ending_probe = {
-            let mut probe = self.probe_next(starting_probe);
-            for _ in range(0u, self.table.size()) {
-                match self.table.peek(probe) {
-                    table::Empty(_) => {}, // empty bucket. this is the end of our shifting.
-                    table::Full(idx) => {
-                        // Bucket that isn't us, which has a non-zero probe distance.
-                        // This isn't the ending index, so keep searching.
-                        if self.bucket_distance(&idx) != 0 {
-                            probe = self.probe_next(probe);
+        let ending_pos = {
+            let full_skipped = (starting_probe + 1) & (cap - 1);
+            let to_skip = full_skipped & table::CHUNK_MASK;
+            let num_skipped = full_skipped >> table::LOG2_CHUNK;
+            let mut items = table::TriArysCycle::new(self.table.as_mut_slice().mut_slice_from(num_skipped + 1), cap >> table::LOG2_CHUNK);
+            let mut triples = unsafe {
+                table::mut_iter_at((*(self as *mut HashMap<K, V, H>)).table.as_mut_slice().unsafe_mut_ref(num_skipped), to_skip)
+            };
+            // let mut idx = 0;
+
+            // for bucket in triples {
+            //     match bucket.hash {
+            //         &0u64 /*if idx >= to_skip*/ => {
+            //             *bucket.hash = hash.inspect();
+            //             unsafe {
+            //                 overwrite(bucket.key, k);
+            //                 overwrite(bucket.val, v);
+            //                 return;
+            //             }
+            //         }
+            //         _ => {}
+            //     }
+            // }
+
+            // for mut triples in items {
+            //     for bucket in triples {
+            //         match bucket.hash {
+            //             &0u64 /*if idx >= to_skip*/ => {
+            //                 *bucket.hash = hash.inspect();
+            //                 unsafe {
+            //                     overwrite(bucket.key, k);
+            //                     overwrite(bucket.val, v);
+            //                     return;
+            //                 }
+            //             }
+            //             _ => {}
+            //         }
+            //         // idx += 1;
+            //     }
+            //     // triples = triples_n;
+            // }
+            // let mut probe = self.probe_next(starting_probe);
+            let mut bucket = triples.next().unwrap();
+            for idx in range(full_skipped, full_skipped + size) {
+                match bucket.hash {
+                    &0u64 => {}
+                    &full_hash => {
+                        if bucket_dib(idx, full_hash, cap) != 0 {
+                            bucket = match triples.next() {
+                                Some(bucket) => bucket,
+                                None => {
+                                    triples = items.get();
+                                    triples.next().unwrap()
+                                }
+                            };
                             continue;
                         }
-
-                        // if we do have a bucket_distance of zero, we're at the end
-                        // of what we need to shift.
                     }
                 }
+                // match self.table.peek(probe) {
+                //     table::Empty(_) => {}, // empty bucket. this is the end of our shifting.
+                //     table::Full(idx) => {
+                //         // Bucket that isn't us, which has a non-zero probe distance.
+                //         // This isn't the ending index, so keep searching.
+                //         if self.bucket_distance(&idx) != 0 {
+                //             probe = self.probe_next(probe);
+                //             continue;
+                //         }
+
+                //         // if we do have a bucket_distance of zero, we're at the end
+                //         // of what we need to shift.
+                //     }
+                // }
                 break;
             }
 
-            probe
+            bucket.hash as *mut u64
         };
 
-        let (_, _, retval) = self.table.take(starting_index);
+        let to_skip = starting_probe & table::CHUNK_MASK;
+        let num_skipped = starting_probe >> table::LOG2_CHUNK;
 
-        let mut      probe = starting_probe;
-        let mut next_probe = self.probe_next(probe);
+        let retval = {
+            let mut items = table::TriArysCycle::new(self.table.as_mut_slice().mut_slice_from(num_skipped + 1), cap >> table::LOG2_CHUNK);
+            let mut triples = unsafe {
+                table::mut_iter_at((*(self as *mut HashMap<K, V, H>)).table.as_mut_slice().unsafe_mut_ref(num_skipped), to_skip)
+            };
+            // let (_, _, retval) = self.table.take(starting_index);
 
-        // backwards-shift all the elements after our newly-deleted one.
-        while next_probe != ending_probe {
-            match self.table.peek(next_probe) {
-                table::Empty(_) => {
-                    // nothing to shift in. just empty it out.
-                    match self.table.peek(probe) {
-                        table::Empty(_) => {},
-                        table::Full(idx) => { self.table.take(idx); }
+            // let mut      probe = starting_probe;
+            // let mut next_probe = self.probe_next(probe);
+            let mut bucket = triples.next().unwrap();
+            let retval = unsafe {
+                *bucket.hash = 0u64;
+                ptr::read(bucket.key as *mut K as *const K);
+                ptr::read(bucket.val as *mut V as *const V)
+            };
+
+            // backwards-shift all the elements after our newly-deleted one.
+            // while next_probe != ending_probe {
+            loop {
+                let next_bucket = match triples.next() {
+                    Some(bucket) => bucket,
+                    None => {
+                        triples = items.get();
+                        triples.next().unwrap()
                     }
-                },
-                table::Full(next_idx) => {
-                    // something to shift. move it over!
-                    let next_hash = next_idx.hash();
-                    let (_, next_key, next_val) = self.table.take(next_idx);
-                    match self.table.peek(probe) {
-                        table::Empty(idx) => {
-                            self.table.put(idx, next_hash, next_key, next_val);
-                        },
-                        table::Full(idx) => {
-                            let (emptyidx, _, _) = self.table.take(idx);
-                            self.table.put(emptyidx, next_hash, next_key, next_val);
-                        }
+                };
+
+                if next_bucket.hash as *mut u64 == ending_pos {
+                    // println!("ok {}", ending_pos);
+                    // no?
+                    // bucket = next_bucket;
+                    break;
+                }
+                // println!("{} != {}", next_bucket.hash as *mut u64, ending_pos);
+
+                match next_bucket.hash {
+                    &0u64 => {
+                        *bucket.hash = 0u64;
+                    }
+                    _ => unsafe {
+                        overwrite(bucket.key, ptr::read(next_bucket.key as *mut K as *const K));
+                        overwrite(bucket.val, ptr::read(next_bucket.val as *mut V as *const V));
+                        *bucket.hash = replace(next_bucket.hash, 0u64);
                     }
                 }
+
+                bucket = next_bucket;
+                // match self.table.peek(next_probe) {
+                //     table::Empty(_) => {
+                //         // nothing to shift in. just empty it out.
+                //         match self.table.peek(probe) {
+                //             table::Empty(_) => {},
+                //             table::Full(idx) => { self.table.take(idx); }
+                //         }
+                //     },
+                //     table::Full(next_idx) => {
+                //         // something to shift. move it over!
+                //         let next_hash = next_idx.hash();
+                //         let (_, next_key, next_val) = self.table.take(next_idx);
+                //         match self.table.peek(probe) {
+                //             table::Empty(idx) => {
+                //                 self.table.put(idx, next_hash, next_key, next_val);
+                //             },
+                //             table::Full(idx) => {
+                //                 let (emptyidx, _, _) = self.table.take(idx);
+                //                 self.table.put(emptyidx, next_hash, next_key, next_val);
+                //             }
+                //         }
+                //     }
+                // }
+
+                // probe = next_probe;
+                // next_probe = self.probe_next(next_probe);
             }
 
-            probe = next_probe;
-            next_probe = self.probe_next(next_probe);
-        }
-
+            match bucket.hash {
+                &0u64 => {}
+                _ => {
+                    *bucket.hash = 0u64;
+                }
+            }
+            retval
+        };
         // Done the backwards shift, but there's still an element left!
         // Empty it out.
-        match self.table.peek(probe) {
-            table::Empty(_) => {},
-            table::Full(idx) => { self.table.take(idx); }
-        }
+        // match self.table.peek(probe) {
+        //     table::Empty(_) => {},
+        //     table::Full(idx) => { self.table.take(idx); }
+        // }
 
         // Now we're done all our shifting. Return the value we grabbed
         // earlier.
+        self.table.len -= 1;
         return Some(retval);
     }
 
@@ -3065,6 +3176,7 @@ mod test_map {
                 let k = Dropable::new(i);
                 let v = m.pop(&k);
 
+                println!("{}", i);
                 assert!(v.is_some());
 
                 let v = drop_vector.get().unwrap();
@@ -3495,12 +3607,14 @@ mod test_map {
         for _ in range(0, cap / 2) {
             i -= 1;
             m.remove(&i);
+            println!("{} {}", i, m.len());
             assert_eq!(m.table.capacity(), new_cap);
         }
 
         for _ in range(0, cap / 2 - 1) {
             i -= 1;
             m.remove(&i);
+            println!("{} {}", i, m.len());
         }
 
         assert_eq!(m.len(), i);
