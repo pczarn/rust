@@ -17,8 +17,8 @@ use default::Default;
 use fmt::Show;
 use fmt;
 use hash::{Hash, Hasher, sip};
-use iter::{Iterator, FromIterator, FilterMap, Chain, Repeat, Zip, Extendable, Cycle};
-use iter::{range, range_inclusive, range_step_inclusive, FromIterator, CloneableIterator};
+use iter::{Iterator, FilterMap, Chain, Repeat, Zip, Extendable};
+use iter::{range, range_inclusive, FromIterator};
 use iter;
 use slice::MutableVector;
 use mem::replace;
@@ -30,16 +30,12 @@ use result::{Ok, Err};
 use kinds::marker;
 use mem::overwrite;
 use ptr;
-// use core::num::Bitwise;
 
-use vec::Vec;
 use slice::ImmutableVector;
 mod table {
     use clone::Clone;
     use cmp;
     use hash::{Hash, Hasher};
-    use iter::range_step_inclusive;
-    use iter::{Iterator, range};
     use kinds::marker;
     use mem::{min_align_of, size_of};
     use mem::{overwrite, transmute};
@@ -49,15 +45,12 @@ mod table {
     use ptr::RawPtr;
     use ptr::set_memory;
     use ptr;
-    // use rt::heap::{allocate, deallocate};
     use tuple::{Tuple3, Tuple8};
     use collections::Collection;
-    use vec::Vec;
-    use iter::{Iterator, CloneableIterator};
-    use iter::{range_step_inclusive, range_step};
-    use iter::{RangeStepInclusive, Zip, Skip, Cycle, Chain, RangeStep, Range, FlatMap};
-    use slice::{MutItems, MutableVector};
-    use alloc::heap::{reallocate_inplace, deallocate, reallocate, allocate, stats_print};
+    use iter::Iterator;
+    use iter::{range, range_step_inclusive};
+    use slice::MutableVector;
+    use alloc::heap::{reallocate_inplace, deallocate, reallocate, allocate};
     use mem;
     use core::raw::Slice;
 
@@ -173,20 +166,6 @@ mod table {
         }
     }
 
-    // pub struct CachedEmpty {
-    //     pos: uint,
-    //     index: EmptyIndex
-    // }
-
-    // pub struct CachedFull {
-    //     pos: uint,
-    //     index: EmptyIndex
-    // }
-
-    // impl CachedIndex<EmptyIndex> {
-    //     fn 
-    // }
-
     #[inline]
     unsafe fn dealloc<T>(ptr: *mut T, len: uint) {
         if mem::size_of::<T>() != 0 {
@@ -194,13 +173,6 @@ mod table {
                        len * mem::size_of::<T>(),
                        mem::min_align_of::<T>())
         }
-        // println!("ptr {}", ptr);
-    }
-
-    struct MutSafeIdx<'a, K, V> {
-        pub h: &'a mut u64,
-        k: &'a mut K,
-        v: &'a mut V,
     }
 
     /// Represents the state of a bucket: it can either have a key/value
@@ -216,17 +188,6 @@ mod table {
     #[deriving(PartialEq)]
     pub struct SafeHash {
         pub hash: u64,
-    }
-
-    impl<'a, K, V> MutSafeIdx<'a, K, V> {
-        pub fn put(&mut self, hash: SafeHash, key: K, val: V) {
-            debug_assert_eq!(*self.h, EMPTY_BUCKET);
-            *self.h = hash.inspect();
-            unsafe {
-                overwrite(self.k, key);
-                overwrite(self.v, val);
-            }
-        }
     }
 
     impl SafeHash {
@@ -295,23 +256,14 @@ mod table {
         /// Does not initialize the buckets. The caller should ensure they,
         /// at the very least, set every hash to EMPTY_BUCKET.
         unsafe fn new_uninitialized(vec_capacity: uint) -> RawTable<K, V> {
-            // let mut v = Vec::with_capacity(vec_capacity);
             if vec_capacity == 0 {
                 RawTable { len: 0, cap: 0, ptr: 0 as *mut TriAry<K, V> }
             } else {
                 let size = expect(vec_capacity.checked_mul(&mem::size_of::<TriAry<K, V>>()),
                                     "capacity overflow");
-                let ptr = unsafe {
-                    allocate(size, mem::min_align_of::<TriAry<K, V>>()) // min align 64 or next power of?
-                };
+                let ptr = allocate(size, mem::min_align_of::<TriAry<K, V>>());
                 RawTable { len: 0, cap: vec_capacity, ptr: ptr as *mut TriAry<K, V> }
             }
-            // // println!("{:?}", v.as_ptr());
-            // unsafe {
-            //     v.set_len(vec_capacity);
-            //     // Vec::from_raw_parts(vec_capacity, vec_capacity, round_up_to_next(v.as_ptr() as uint, 64) as *mut RawChk<K, V>)
-            //     // Vec::from_raw_parts(vec_capacity, vec_capacity, v.as_mut_ptr())
-            // }
         }
 
         /// Creates a new raw table from a given capacity. All buckets are
@@ -329,12 +281,12 @@ mod table {
             }
         }
 
-        // fn tuple_get idx & 7
+        // // fn tuple_get idx & 7
 
-        /// Reads a bucket at a given index, returning an enum indicating whether
-        /// there's anything there or not. You need to match on this enum to get
-        /// the appropriate types to pass on to most of the other functions in
-        /// this module.
+        // /// Reads a bucket at a given index, returning an enum indicating whether
+        // /// there's anything there or not. You need to match on this enum to get
+        // /// the appropriate types to pass on to most of the other functions in
+        // /// this module.
         pub fn peek(&self, index: uint) -> BucketState {
             // let hashes = unsafe { (*self.chunks.as_ptr().offset((idx as uint >> 3) as int)).ref0() };
             // TODO match all idxs with match?
@@ -452,45 +404,6 @@ mod table {
 
         unsafe fn get_chunk(&mut self, idx: uint) -> &mut TriAry<K, V> {
             &mut *self.ptr.offset((idx >> LOG2_CHUNK) as int)
-        }
-
-        /// Read everything, mutably.
-        pub fn safe_all_mut<'a>(&'a mut self, idx: int, empty: bool) -> MutSafeIdx<'a, K, V> {
-            // makes insert and new_insert_drop slow!
-            let idx = idx as uint;
-            let &(ref mut hshs, ref mut keys, ref mut vals) = unsafe { self.get_chunk(idx) };
-
-            if empty {
-                // put into empty
-                debug_assert_eq!(hshs[idx & CHUNK_MASK], EMPTY_BUCKET);
-            }
-            MutSafeIdx { 
-                h: &'a mut hshs[idx & CHUNK_MASK],
-                k: &'a mut keys[idx & CHUNK_MASK],
-                v: &'a mut vals[idx & CHUNK_MASK]
-            }
-        }
-
-        /// Puts a key and value pair, along with the key's hash, into a given
-        /// index in the hashtable. Note how the `EmptyIndex` is 'moved' into this
-        /// function, because that slot will no longer be empty when we return!
-        /// A FullIndex is returned for later use, pointing to the newly-filled
-        /// slot in the hashtable.
-        ///
-        /// Use `make_hash` to construct a `SafeHash` to pass to this function.
-        pub fn put(&mut self, index: EmptyIndex, hash: SafeHash, k: K, v: V) -> FullIndex {
-            let idx = index.idx;
-
-            unsafe {
-                let mut i = self.safe_all_mut(index.idx, true);
-                i.put(hash, k, v);
-            }
-
-            unsafe {
-                self.len += 1;
-            }
-
-            FullIndex { idx: idx, hash: hash, nocopy: marker::NoCopy }
         }
 
         /// Removes a key and value from the hashtable.
@@ -1399,20 +1312,26 @@ mod table {
             // println!("start drop");
             // This is in reverse because we're likely to have partially taken
             // some elements out with `.move_iter()` from the front.
-            for i in range_step_inclusive(self.capacity() as int - 1, 0, -1) {
-                // Check if the size is 0, so we don't do a useless scan when
-                // dropping empty tables such as on resize.
-                if self.len == 0 { break }
-
-                match self.peek(i as uint) {
-                    Empty(_)  => {},
-                    Full(idx) => { self.take(idx); }
-                }
-            }
-
             if self.cap != 0 {
+                let (ptr, cap, mut len) = (self.ptr, self.cap, self.len);
+                let mut items = TriAryIter::new(self.as_mut_slice());
+                for mut triples in items {
+                    if len == 0 { break }
+                    for bucket in triples {
+                        match bucket.hash {
+                            &0u64 => {}
+                            _ => unsafe {
+                                ptr::read(bucket.key as *mut K as *const K);
+                                ptr::read(bucket.val as *mut V as *const V);
+
+                                len -= 1;
+                            }
+                        }
+                    }
+                }
+
                 unsafe {
-                    dealloc(self.ptr, self.cap)
+                    dealloc(ptr, cap)
                 }
             }
         }
@@ -2550,66 +2469,6 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
             self.table.shrink_to(new_capacity);
             // self.table.size = keep_len;
         }
-    }
-
-    /// Perform robin hood bucket stealing at the given 'index'. You must
-    /// also pass that probe's "distance to initial bucket" so we don't have
-    /// to recalculate it, as well as the total number of probes already done
-    /// so we have some sort of upper bound on the number of probes to do.
-    ///
-    /// 'hash', 'k', and 'v' are the elements to robin hood into the hashtable.
-    fn robin_hood(&mut self, mut index: table::FullIndex, mut dib_param: uint,
-                  mut hash: table::SafeHash, mut k: K, mut v: V) {
-        #![inline(always)]
-        let (mut hash_ref, mut key_ref, mut val_ref) = self.table.ptr_mut_idx(index.raw_index() as int);
-
-        'outer: loop { unsafe {
-            let (old_hash, old_key, old_val) = {
-                // let (old_hash_ref, old_key_ref, old_val_ref) =
-                //         self.table.read_all_mut(&index);
-
-                let old_hash = replace(&mut *(hash_ref as *mut table::SafeHash), hash);
-                let old_key  = replace(&mut *key_ref,  k);
-                let old_val  = replace(&mut *val_ref,  v);
-
-                (old_hash, old_key, old_val)
-            };
-
-            let mut probe = self.probe_next(index.raw_index());
-
-            for dib in range(dib_param + 1, self.table.size()) {
-                let (hr, kr, vr) = self.table.ptr_mut_idx(probe as int); // TODO uint only?
-
-                let full_index = match self.table.internal_peek(probe, *hr) {
-                    table::Empty(idx) => {
-                        // Finally. A hole!
-                        self.table.put(idx, old_hash, old_key, old_val);
-                        return;
-                    },
-                    table::Full(idx) => idx
-                };
-
-                let probe_dib = self.bucket_distance(&full_index);
-
-                // Robin hood! Steal the spot.
-                if probe_dib < dib {
-                    hash_ref = hr;
-                    key_ref = kr;
-                    val_ref = vr;
-                    index = full_index;
-                    dib_param = probe_dib;
-                    hash = old_hash;
-                    k = old_key;
-                    v = old_val;
-                    continue 'outer;
-                }
-
-                probe = self.probe_next(probe);
-            }
-
-            // println!("{} {} {}", index.raw_index(), dib_param, hash.inspect());
-            fail!("HashMap fatal error: 100% load factor?");
-        }}
     }
 
     /// Inserts an element which has already been hashed, returning a reference
