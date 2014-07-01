@@ -912,6 +912,44 @@ mod table {
         }
     }
 
+    impl<'a, K, V> Iterator<Bucket<'a, K, V>> for TriAryEntriesCount<'a, K, V> {
+        #[inline]
+        fn next(&mut self) -> Option<Bucket<'a, K, V>> {
+            if self.vals >= self.seg_ptr as *mut V {
+                if self.seg_ptr == self.seg_end {
+                    if self.cap == 0 {
+                        return None;
+                    }
+                    let off = -(self.cap as int);
+                    self.cap = 0;
+                    unsafe {
+                        self.seg_ptr = self.seg_ptr.offset(off);
+                        self.seg_key = self.seg_key.offset(off);
+                        self.seg_val = self.seg_val.offset(off);
+                    }
+                }
+
+                unsafe {
+                    self.ptr = self.seg_ptr as *mut u64;
+                    self.keys = self.seg_key as *mut K;
+                    self.vals = self.seg_val as *mut V;
+                    self.seg_ptr = self.seg_ptr.offset(1);
+                    self.seg_key = self.seg_key.offset(1);
+                    self.seg_val = self.seg_val.offset(1);
+                }
+            }
+
+            unsafe {
+                let bucket = (self.ptr, self.keys, self.vals);
+                self.ptr = self.ptr.offset(1);
+                self.keys = self.keys.offset(1);
+                self.vals = self.vals.offset(1);
+                // println!("{:?}", bucket)
+                Some(transmute(bucket))
+            }
+        }
+    }
+
     pub struct TriArysCycle<'a, K, V> {
         end: *mut TriAry<K, V>,
         ptr: *mut TriAry<K, V>,
@@ -1947,10 +1985,15 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         // };
 
         // println!("overwrite {}", size);
-        for dib in range_inclusive(0u, size) {
+        let mut dib = 0u;
+        loop {
         // for dib in range_inclusive(0u, size) {
             // let idx = (dib + full_skipped) & (cap - 1);
-            let bucket = items.get();
+            // let bucket = items.get();
+            let bucket = match items.next() {
+                Some(it) => it,
+                None => break
+            };
 
             match bucket.hash {
                 &0u64 => {
@@ -2001,8 +2044,13 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
 
                             let mut items_clone = items.clone();
 
-                            for dib in range(dib_param + 1, size) {
-                                let bucket =  items_clone.get();
+                            let mut dib = dib_param + 1;
+                            loop {
+                                let bucket = match items_clone.next() {
+                                    Some(it) => it,
+                                    None => break
+                                };
+                                // let bucket =  items _clone.get();
 
                                 match bucket.hash {
                                     &0u64 => {
@@ -2029,6 +2077,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                                         }
                                     }
                                 }
+                                dib += 1;
                             }
 
                             fail!("HashMap fatal error: 100% load factor?");
@@ -2045,6 +2094,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                     // }
                 }
             }
+            dib += 1;
         }
         // We really shouldn't be here.
         fail!("Internal HashMap error: Out of space.");
