@@ -47,8 +47,7 @@ mod table {
     use ptr;
     use tuple::{Tuple3, Tuple8};
     use collections::Collection;
-    use iter::Iterator;
-    use iter::{range, range_step_inclusive};
+    use iter::{Iterator, range};
     use slice::MutableVector;
     use alloc::heap::{reallocate_inplace, deallocate, reallocate, allocate};
     use mem;
@@ -272,50 +271,12 @@ mod table {
         pub fn new(capacity: uint) -> RawTable<K, V> {
             let vec_cap = capacity >> LOG2_CHUNK;
             unsafe {
-                let mut table = RawTable::new_uninitialized(vec_cap);
+                let table = RawTable::new_uninitialized(vec_cap);
                 set_memory(table.ptr, 0u8, vec_cap);
                 // for &(ref mut hashes, _, _) in ret.chunks.mut_iter() {
                 //     set_memory(hashes.unsafe_mut_ref(0), 0u8, CHUNK);
                 // }
                 table
-            }
-        }
-
-        // // fn tuple_get idx & 7
-
-        // /// Reads a bucket at a given index, returning an enum indicating whether
-        // /// there's anything there or not. You need to match on this enum to get
-        // /// the appropriate types to pass on to most of the other functions in
-        // /// this module.
-        pub fn peek(&self, index: uint) -> BucketState {
-            // let hashes = unsafe { (*self.chunks.as_ptr().offset((idx as uint >> 3) as int)).ref0() };
-            // TODO match all idxs with match?
-            // let hash = unsafe { *(hashes.ref0() as *const u64).offset(idx & 7) };
-            let (hash, _, _) = unsafe { self.ref_idx(index as int) };
-            self.internal_peek(index, *hash)
-        }
-        pub fn internal_peek(&self, index: uint, hash: u64) -> BucketState {
-            debug_assert!(index < self.capacity());
-
-            let idx  = index as int;
-            // let hashes = unsafe { (*self.chunks.as_ptr().offset((idx as uint >> 3) as int)).ref0() };
-            // TODO match all idxs with match?
-            // let hash = unsafe { *(hashes.ref0() as *const u64).offset(idx & 7) };
-
-            let nocopy = marker::NoCopy;
-
-            match hash { // or hash { &full_hash =>
-                EMPTY_BUCKET =>
-                    Empty(EmptyIndex {
-                        idx:    idx,
-                        nocopy: nocopy
-                    }),
-                full_hash =>
-                    Full(FullIndex {
-                        idx:    idx,
-                        hash:   SafeHash { hash: full_hash },
-                        nocopy: nocopy,
-                    })
             }
         }
 
@@ -410,35 +371,35 @@ mod table {
         ///
         /// This works similarly to `put`, building an `EmptyIndex` out of the
         /// taken FullIndex.
-        pub fn take(&mut self, index: FullIndex) -> (EmptyIndex, K, V) {
-            let idx  = index.idx;
+        // pub fn take(&mut self, index: FullIndex) -> (EmptyIndex, K, V) {
+        //     let idx  = index.idx;
 
-            let (_, key, val) = self.ptr_idx(idx);
-            let (hash, _, _) = self.ptr_mut_idx(idx);
+        //     let (_, key, val) = self.ptr_idx(idx);
+        //     let (hash, _, _) = self.ptr_mut_idx(idx);
 
-            let tup = unsafe {
-                // let &(ref mut hashes, ref keys, ref vals) = &mut *self.chunks.as_mut_ptr().offset((idx as uint >> 3) as int);
-                debug_assert!(*hash != EMPTY_BUCKET);
+        //     let tup = unsafe {
+        //         // let &(ref mut hashes, ref keys, ref vals) = &mut *self.chunks.as_mut_ptr().offset((idx as uint >> 3) as int);
+        //         debug_assert!(*hash != EMPTY_BUCKET);
 
-                *hash = EMPTY_BUCKET;
+        //         *hash = EMPTY_BUCKET;
 
-                // Drop the mutable constraint.
-                // let keys = (self.hashes as *mut u8).offset(self.keys() as int) as *mut K;
-                // let vals = (self.hashes as *mut u8).offset(self.vals() as int) as *mut V;
-                // let keys = keys as *const K;
-                // let vals = vals as *const V;
+        //         // Drop the mutable constraint.
+        //         // let keys = (self.hashes as *mut u8).offset(self.keys() as int) as *mut K;
+        //         // let vals = (self.hashes as *mut u8).offset(self.vals() as int) as *mut V;
+        //         // let keys = keys as *const K;
+        //         // let vals = vals as *const V;
 
-                let k = ptr::read(key);
-                let v = ptr::read(val);
-                (EmptyIndex { idx: idx, nocopy: marker::NoCopy }, k, v)
-            };
+        //         let k = ptr::read(key);
+        //         let v = ptr::read(val);
+        //         (EmptyIndex { idx: idx, nocopy: marker::NoCopy }, k, v)
+        //     };
 
 
-            self.len -= 1;
-            // println!("take. {}", self.len);
+        //     self.len -= 1;
+        //     // println!("take. {}", self.len);
 
-            tup
-        }
+        //     tup
+        // }
 
         // pub fn internal_take(&mut self, index: FullIndex) -> (EmptyIndex, K, V) {
         //     let idx  = index.idx;
@@ -521,15 +482,50 @@ mod table {
         }
 
         pub fn iter<'a>(&'a self) -> Entries<'a, K, V> {
-            Entries { table: self, idx: 0, elems_seen: 0 }
+            // Entries { table: self, idx: 0, elems_seen: 0 }
+            unsafe {
+                let ptr = self.as_slice().as_ptr();
+                let keys = (*ptr).ref1() as *const [K, ..CHUNK] as *const K;
+                let vals = (*ptr).ref2() as *const [V, ..CHUNK] as *const V;
+
+                Entries {
+                    table: self,
+                    elems_seen: 0,
+                    seg_ptr: ptr.offset(cmp::min(1, self.cap) as int),
+                    seg_end: ptr.offset(self.cap as int),
+                    seg_key: (keys as *const TriAry<K, V>).offset(1),
+                    seg_val: (vals as *const TriAry<K, V>).offset(1),
+                    ptr:  ((*ptr).ref0() as *const [u64, ..CHUNK] as *const u64),
+                    keys: keys,
+                    vals: vals,
+                }
+            }
         }
 
         pub fn mut_iter<'a>(&'a mut self) -> MutEntries<'a, K, V> {
-            MutEntries { table: self, idx: 0, elems_seen: 0 }
+            // MutEntries { table: self, idx: 0, elems_seen: 0 }
+            unsafe {
+                let len = self.cap;
+                let ptr = self.as_mut_slice().as_mut_ptr();
+                let &([ref ptrs, ..], [ref keys, ..], [ref mut vals, ..]) = &mut *ptr;
+                let &(_, ref seg_keys, ref mut seg_vals) = &mut *ptr.offset(1);
+
+                MutEntries {
+                    table: self,
+                    elems_seen: 0,
+                    seg_ptr: ptr.offset(cmp::min(1, len) as int) as *const TriAry<K, V>,
+                    seg_end: ptr.offset(len as int) as *const TriAry<K, V>,
+                    seg_key: seg_keys as *const [K, ..CHUNK] as *const TriAry<K, V>,
+                    seg_val: seg_vals as *mut [V, ..CHUNK] as *mut TriAry<K, V>,
+                    ptr:  ptrs,
+                    keys: keys,
+                    vals: vals,
+                }
+            }
         }
 
         pub fn move_iter(mut self) -> MoveEntries<K, V> {
-            MoveEntries { table: self, idx: 0 }
+            // MoveEntries { table: self, idx: 0 }
             // let mut items = unsafe { transmute(TriAryIter::new(self.as_mut_slice())) };
             // MoveEntries {
             //     table: self,
@@ -537,6 +533,25 @@ mod table {
             //     items: items,
             //     triples: items.next().unwrap()
             // }
+            unsafe {
+                let len = self.cap;
+                let ptr = self.as_mut_slice().as_mut_ptr();
+                let &([ref mut ptrs, ..], [ref keys, ..], [ref vals, ..]) = &mut *ptr;
+                let &(_, ref seg_keys, ref seg_vals) = &*ptr.offset(1);
+                // let keys = keys as *const K;
+                // let vals = vals as *const V;
+
+                MoveEntries {
+                    table: self,
+                    seg_ptr: ptr.offset(cmp::min(1, len) as int), // important cmp for not yet allocated maps
+                    seg_end: ptr.offset(len as int),
+                    seg_key: seg_keys as *const [K, ..CHUNK] as *const TriAry<K, V>,
+                    seg_val: seg_vals as *const [V, ..CHUNK] as *const TriAry<K, V>,
+                    ptr:  ptrs,
+                    keys: keys,
+                    vals: vals,
+                }
+            }
         }
 
         #[inline]
@@ -660,11 +675,11 @@ mod table {
         pub val:  &'a mut V
     }
 
-    impl<'a, K, V> Bucket<'a, K, V> {
-        fn put(&mut self, h: u64, k: K, v: V) {
+    // impl<'a, K, V> Bucket<'a, K, V> {
+    //     fn put(&mut self, h: u64, k: K, v: V) {
 
-        }
-    }
+    //     }
+    // }
 
     pub struct MutTriVecEntries<'a, K, V> {
         pub ptr: *mut u64,
@@ -1146,41 +1161,103 @@ mod table {
     /// Iterator over shared references to entries in a table.
     pub struct Entries<'a, K, V> {
         table: &'a RawTable<K, V>,
-        idx: uint,
+        seg_end: *const TriAry<K, V>,
+        seg_ptr: *const TriAry<K, V>,
+        seg_key: *const TriAry<K, V>,
+        seg_val: *const TriAry<K, V>,
+        ptr:  *const u64,
+        keys: *const K,
+        vals: *const V,
         elems_seen: uint,
     }
 
     /// Iterator over mutable references to entries in a table.
     pub struct MutEntries<'a, K, V> {
         table: &'a mut RawTable<K, V>,
-        idx: uint,
+        seg_end: *const TriAry<K, V>,
+        seg_ptr: *const TriAry<K, V>,
+        seg_key: *const TriAry<K, V>,
+        seg_val: *mut TriAry<K, V>,
+        ptr:  *const u64,
+        keys: *const K,
+        vals: *mut V,
         elems_seen: uint,
     }
 
     /// Iterator over the entries in a table, consuming the table.
     pub struct MoveEntries<K, V> {
         table: RawTable<K, V>,
-        idx: uint,
-        // items: TriAryIter<'static, K, V>,
-        // triples: MutTriVecEntries<'static, K, V>
+        seg_end: *mut TriAry<K, V>,
+        seg_ptr: *mut TriAry<K, V>,
+        seg_key: *const TriAry<K, V>,
+        seg_val: *const TriAry<K, V>,
+        ptr:  *mut u64,
+        keys: *const K,
+        vals: *const V,
     }
 
     impl<'a, K, V> Iterator<(&'a K, &'a V)> for Entries<'a, K, V> {
         fn next(&mut self) -> Option<(&'a K, &'a V)> {
-            while self.idx < self.table.capacity() {
-                let i = self.idx;
-                self.idx += 1;
+            // loop {
+            //     while self.vals < self.seg_ptr as *const V {
+            //         unsafe {
+            //             let (ptr, key, val) = (self.ptr, self.keys, self.vals);
+            //             self.ptr = self.ptr.offset(1);
+            //             self.keys = self.keys.offset(1);
+            //             self.vals = self.vals.offset(1);
+            //             match *ptr {
+            //                 0u64 => {}
+            //                 full_hash => {
+            //                     return Some(transmute((key, val)));
+            //                 }
+            //             }
+            //         }
+            //     }
+            //     if self.seg_ptr == self.seg_end {
+            //         return None;
+            //     }
+            //     unsafe {
+            //         self.ptr = self.seg_ptr as *const u64;
+            //         self.keys = self.seg_key as *const K;
+            //         self.vals = self.seg_val as *const V;
+            //         self.seg_ptr = self.seg_ptr.offset(1);
+            //         self.seg_key = self.seg_key.offset(1);
+            //         self.seg_val = self.seg_val.offset(1);
+            //     }
+            // }
 
-                match self.table.peek(i) {
-                    Empty(_)  => {},
-                    Full(idx) => {
-                        self.elems_seen += 1;
-                        return Some(self.table.read(&idx));
+            // None
+            loop {
+                if self.vals >= self.seg_ptr as *const V {
+                    if self.seg_ptr == self.seg_end {
+                        return None;
+                    }
+
+                    unsafe {
+                        self.ptr = self.seg_ptr as *const u64;
+                        self.keys = self.seg_key as *const K;
+                        self.vals = self.seg_val as *const V;
+                        self.seg_ptr = self.seg_ptr.offset(1);
+                        self.seg_key = self.seg_key.offset(1);
+                        self.seg_val = self.seg_val.offset(1);
+                    }
+                }
+
+                unsafe {
+                    let (ptr, key, val) = (self.ptr, self.keys, self.vals);
+                    self.ptr = self.ptr.offset(1);
+                    self.keys = self.keys.offset(1);
+                    self.vals = self.vals.offset(1);
+                    match *ptr {
+                        0u64 => {}
+                        full_hash => {
+                            self.elems_seen += 1;
+                            let r = Some(transmute((key, val)));
+                            return r;
+                        }
                     }
                 }
             }
-
-            None
         }
 
         fn size_hint(&self) -> (uint, Option<uint>) {
@@ -1191,23 +1268,36 @@ mod table {
 
     impl<'a, K, V> Iterator<(&'a K, &'a mut V)> for MutEntries<'a, K, V> {
         fn next(&mut self) -> Option<(&'a K, &'a mut V)> {
-            while self.idx < self.table.capacity() {
-                let i = self.idx;
-                self.idx += 1;
+            loop {
+                if self.vals >= self.seg_ptr as *const V as *mut V {
+                    if self.seg_ptr == self.seg_end {
+                        return None;
+                    }
 
-                match self.table.peek(i) {
-                    Empty(_)  => {},
-                    // the transmute here fixes:
-                    // error: lifetime of `self` is too short to guarantee its contents
-                    //        can be safely reborrowed
-                    Full(idx) => unsafe {
-                        self.elems_seen += 1;
-                        return Some(transmute(self.table.read_mut(&idx)));
+                    unsafe {
+                        self.ptr = self.seg_ptr as *const u64;
+                        self.keys = self.seg_key as *const K;
+                        self.vals = self.seg_val as *mut V;
+                        self.seg_ptr = self.seg_ptr.offset(1);
+                        self.seg_key = self.seg_key.offset(1);
+                        self.seg_val = self.seg_val.offset(1);
+                    }
+                }
+
+                unsafe {
+                    let (ptr, key, val) = (self.ptr, self.keys, self.vals);
+                    self.ptr = self.ptr.offset(1);
+                    self.keys = self.keys.offset(1);
+                    self.vals = self.vals.offset(1);
+                    match *ptr {
+                        0u64 => {}
+                        full_hash => {
+                            self.elems_seen += 1;
+                            return Some(transmute((key, val)));
+                        }
                     }
                 }
             }
-
-            None
         }
 
         fn size_hint(&self) -> (uint, Option<uint>) {
@@ -1218,54 +1308,75 @@ mod table {
 
     impl<K, V> Iterator<(SafeHash, K, V)> for MoveEntries<K, V> {
         fn next(&mut self) -> Option<(SafeHash, K, V)> {
-            while self.idx < self.table.capacity() {
-                let i = self.idx;
-                self.idx += 1;
+            // while self.seg_ptr != self.seg_end {
+            // println!("{:?}", self);
+            // loop {
+            //     println!("inner");
+            //     while self.vals < self.seg_ptr as *mut V as *const V {
+            //         println!("inner {:?}", self);
+            //         unsafe {
+            //             let (ptr, key, val) = (self.ptr, self.keys, self.vals);
+            //             self.ptr = self.ptr.offset(1);
+            //             self.keys = self.keys.offset(1);
+            //             self.vals = self.vals.offset(1);
+            //             match *ptr {
+            //                 0u64 => {}
+            //                 full_hash => {
+            //                     *ptr = 0u64;
+            //                     let r = Some((transmute(full_hash), ptr::read(key), ptr::read(val)));
+            //                     println!("move {:?}", r);
+            //                     return r;
+            //                 }
+            //             }
+            //         }
+            //     }
+            //     if self.seg_ptr == self.seg_end {
+            //         return None;
+            //     }
+            //     unsafe {
+            //         self.ptr = self.seg_ptr as *mut u64;
+            //         self.keys = self.seg_key as *const K;
+            //         self.vals = self.seg_val as *const V;
+            //         self.seg_ptr = self.seg_ptr.offset(1);
+            //         self.seg_key = self.seg_key.offset(1);
+            //         self.seg_val = self.seg_val.offset(1);
+            //     }
+            // }
 
-                match self.table.peek(i) {
-                    Empty(_) => {},
-                    Full(idx) => {
-                        let h = idx.hash();
-                        let (_, k, v) = self.table.take(idx);
-                        return Some((h, k, v));
+            // None
+            loop {
+                if self.vals >= self.seg_ptr as *const V {
+                    if self.seg_ptr == self.seg_end {
+                        return None;
+                    }
+
+                    unsafe {
+                        self.ptr = self.seg_ptr as *mut u64;
+                        self.keys = self.seg_key as *const K;
+                        self.vals = self.seg_val as *const V;
+                        self.seg_ptr = self.seg_ptr.offset(1);
+                        self.seg_key = self.seg_key.offset(1);
+                        self.seg_val = self.seg_val.offset(1);
+                    }
+                }
+
+                unsafe {
+                    let (ptr, key, val) = (self.ptr, self.keys, self.vals);
+                    self.ptr = self.ptr.offset(1);
+                    self.keys = self.keys.offset(1);
+                    self.vals = self.vals.offset(1);
+                    println!("{:?}", (ptr, key, val))
+                    match *ptr {
+                        0u64 => {}
+                        full_hash => {
+                            *ptr = 0u64;
+                            let r = Some((transmute(full_hash), ptr::read(key), ptr::read(val)));
+                            println!("move {:?}", r);
+                            return r;
+                        }
                     }
                 }
             }
-            None
-            //.mut_slice_to(vec_cap));
-            // let unsfptr = unsafe{self as *mut HashMap<K, V, H>};
-            // // (*unsfptr).table.set_len(new_capacity >> table::LOG2_CHUNK);
-            // // let mut last_empty = false;
-
-            // // let mut idx = 0;
-            // for mut triples in items {
-            //     // very important to keep this 
-            //     // set_memory((triples.ptr as *mut table::TriAry<K, V>).offset(vec_cap as int) as *mut u8, 0u8, table::CHUNK);
-                // for bucket in triples {
-
-            // loop {
-            //     let bucket = match self.triples.next() {
-            //         Some(bucket) => bucket,
-            //         None => {
-            //             self.triples = match self.items.next() {
-            //                 Some(t) => t,
-            //                 None => return None
-            //             };
-            //             self.triples.next().unwrap()
-            //         }
-            //     };
-            //     match bucket.hash {
-            //         &0u64 => {} // empty or in place
-            //         &full_hash => unsafe {
-            //             let k = ptr::read(bucket.key as *mut K as *const K);
-            //             let v = ptr::read(bucket.val as *mut V as *const V);
-
-            //             let hash = *bucket.hash;
-            //             *bucket.hash = 0u64;
-            //             return Some((SafeHash{hash:hash}, k, v));
-            //         }
-            //     }
-            // }
         }
 
         fn size_hint(&self) -> (uint, Option<uint>) {
@@ -1276,40 +1387,38 @@ mod table {
 
     impl<K: Clone, V: Clone> Clone for RawTable<K, V> {
         fn clone(&self) -> RawTable<K, V> {
+            let mut new_ht = unsafe {
+                RawTable::new_uninitialized(self.cap)
+            };
+            new_ht.len = self.len;
             unsafe {
-                let mut new_ht = RawTable::new_uninitialized(self.cap);
-
+                // clone with cap=0?
+                let mut items = TriAryEntriesWrap::new(self.as_slice(), 0, 0);
+                // let mut triples = items.next().unwrap();
+                let mut to_items = TriAryEntriesWrap::new(new_ht.as_mut_slice(), 0, 0);
+                // let mut to_triples = to_items.next().unwrap();
                 for i in range(0, self.capacity()) {
-                    match self.peek(i) {
-                        Empty(_)  => {
-                            let &(ref mut hashes, _, _) = new_ht.get_mut(i >> LOG2_CHUNK);
-                            hashes[i & CHUNK_MASK] = EMPTY_BUCKET;
+                    let bucket = items.get();
+                    let to_bucket = to_items.get();
+                    match bucket.hash {
+                        &0u64  => {
+                            *to_bucket.hash = EMPTY_BUCKET;
                         },
-                        Full(idx) => {
-                            let hash = idx.hash().inspect();
-                            let (k, v) = self.read(&idx);
-
-                            let &(ref mut hashes, ref mut keys, ref mut vals) = new_ht.get_mut(i >> LOG2_CHUNK);
-                            hashes[i & CHUNK_MASK] = hash;
-                // let keys = (new_ht.hashes as *mut u8).offset(new_ht.keys() as int) as *mut K;
-                // let vals = (new_ht.hashes as *mut u8).offset(new_ht.vals() as int) as *mut V;
-                            overwrite(&mut keys[i & CHUNK_MASK], (*k).clone());
-                            overwrite(&mut vals[i & CHUNK_MASK], (*v).clone());
+                        &hash => {
+                            *to_bucket.hash = hash;
+                            overwrite(to_bucket.key, bucket.key.clone());
+                            overwrite(to_bucket.val, bucket.val.clone());
                         }
                     }
                 }
-
-                new_ht.len = self.len;
-
-                new_ht
             }
+            new_ht
         }
     }
 
     #[unsafe_destructor]
     impl<K, V> Drop for RawTable<K, V> {
         fn drop(&mut self) {
-            // println!("start drop");
             // This is in reverse because we're likely to have partially taken
             // some elements out with `.move_iter()` from the front.
             if self.cap != 0 {
@@ -2088,11 +2197,19 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> Mutable for HashMap<K, V, H> {
         // Prevent reallocations from happening from now on. Makes it possible
         // for the map to be reused but has a downside: reserves permanently.
         self.resize_policy.reserve(self.table.size());
+        self.table.len = 0;
 
-        for i in range(0, self.table.capacity()) {
-            match self.table.peek(i) {
-                table::Empty(_)  => {},
-                table::Full(idx) => { self.table.take(idx); }
+        let mut items = table::TriAryIter::new(self.table.as_mut_slice());
+        for mut triples in items {
+            for bucket in triples {
+                match bucket.hash {
+                    &0u64 => {}
+                    _ => unsafe {
+                        *bucket.hash = 0u64;
+                        ptr::read(bucket.key as *mut K as *const K);
+                        ptr::read(bucket.val as *mut V as *const V);
+                    }
+                }
             }
         }
     }
