@@ -1481,93 +1481,47 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         let starting_probe = starting_index.raw_index();
         let size =  self.table.size();
         let cap = self.table.capacity();
-        // let full_skipped = (starting_probe as uint) & (cap - 1);
 
-        let ending_pos = {
-            let full_skipped = (starting_probe + 1) & (cap - 1);
-            let to_skip = full_skipped & table::CHUNK_MASK;
-            let num_skipped = full_skipped >> table::LOG2_CHUNK;
-            let mut items = table::TriArysCycle::new(self.table.as_mut_slice().mut_slice_from(num_skipped + 1), cap >> table::LOG2_CHUNK);
-            let mut triples = unsafe {
-                table::mut_iter_at((*(self as *mut HashMap<K, V, H>)).table.as_mut_slice().unsafe_mut_ref(num_skipped), to_skip)
-            };
-
-            let mut bucket = triples.next().unwrap();
-            for idx in range(full_skipped, full_skipped + size) {
-                match bucket.hash {
-                    &0u64 => {}
-                    &full_hash => {
-                        if bucket_dib(idx, full_hash, cap) != 0 {
-                            bucket = match triples.next() {
-                                Some(bucket) => bucket,
-                                None => {
-                                    triples = items.get();
-                                    triples.next().unwrap()
-                                }
-                            };
-                            continue;
-                        }
-                    }
-                }
-                break;
-            }
-
-            bucket.hash as *mut u64
-        };
-
+        let full_skipped = (starting_probe as uint) & (cap - 1);
         let to_skip = starting_probe & table::CHUNK_MASK;
         let num_skipped = starting_probe >> table::LOG2_CHUNK;
 
         let retval = {
-            let mut items = table::TriArysCycle::new(self.table.as_mut_slice().mut_slice_from(num_skipped + 1), cap >> table::LOG2_CHUNK);
-            let mut triples = unsafe {
-                table::mut_iter_at((*(self as *mut HashMap<K, V, H>)).table.as_mut_slice().unsafe_mut_ref(num_skipped), to_skip)
-            };
+            // let mut items = table::TriArysCycle::new(self.table.as_mut_slice().mut_slice_from(num_skipped + 1), cap >> table::LOG2_CHUNK);
+            // let mut triples = unsafe {
+            //     table::mut_iter_at((*(self as *mut HashMap<K, V, H>)).table.as_mut_slice().unsafe_mut_ref(num_skipped), to_skip)
+            // };
+            let mut items = table::TriAryEntriesCount::new(self.table.as_mut_slice().mut_slice_from(num_skipped), to_skip, cap >> table::LOG2_CHUNK);
 
-            let mut bucket = triples.next().unwrap();
+            let mut bucket = items.get();
             let retval = unsafe {
-                *bucket.hash = 0u64;
                 ptr::read(bucket.key as *mut K as *const K);
                 ptr::read(bucket.val as *mut V as *const V)
             };
 
             // backwards-shift all the elements after our newly-deleted one.
-            loop {
-                let next_bucket = match triples.next() {
-                    Some(bucket) => bucket,
-                    None => {
-                        triples = items.get();
-                        triples.next().unwrap()
-                    }
-                };
-
-                if next_bucket.hash as *mut u64 == ending_pos {
-                    // no? bucket = next_bucket;
-                    break;
-                }
+            for idx in range_inclusive(full_skipped + 1, full_skipped + size) {
+                let next_bucket = items.get();
 
                 match next_bucket.hash {
                     &0u64 => {
-                        *bucket.hash = 0u64;
+                        break;
                     }
-                    _ => unsafe {
+                    &full_hash => unsafe {
+                        if bucket_dib(idx, full_hash, cap) == 0 {
+                            break;
+                        }
                         overwrite(bucket.key, ptr::read(next_bucket.key as *mut K as *const K));
                         overwrite(bucket.val, ptr::read(next_bucket.val as *mut V as *const V));
-                        *bucket.hash = replace(next_bucket.hash, 0u64);
+                        *bucket.hash = *next_bucket.hash;
                     }
                 }
 
                 bucket = next_bucket;
             }
 
-            // Done the backwards shift, but there's still an element left!
-            // Empty it out.
-            match bucket.hash {
-                &0u64 => {}
-                _ => {
-                    *bucket.hash = 0u64;
-                }
-            }
+            *bucket.hash = 0u64;
+
             retval
         };
 
@@ -2755,7 +2709,9 @@ mod test_map {
         assert_eq!(*m.find(&1).unwrap(), 2);
         assert_eq!(*m.find(&5).unwrap(), 3);
         assert_eq!(*m.find(&9).unwrap(), 4);
+        println!("{}", m)
         assert!(m.remove(&1));
+        println!("{}", m)
         assert_eq!(*m.find(&9).unwrap(), 4);
         assert_eq!(*m.find(&5).unwrap(), 3);
     }
