@@ -123,6 +123,25 @@ mod table {
         nocopy: marker::NoCopy,
     }
 
+    pub struct Bucket<'a, K, V> {
+        hash: u64,
+        key:  &'a K,
+        val:  &'a V,
+        idx:  int
+    }
+
+    pub struct MutBucket<'a, K, V> {
+        hash: &'a mut u64,
+        key:  &'a mut K,
+        val:  &'a mut V,
+        idx:  int
+    }
+
+    pub struct EmptyBucket<'a, K, V>(Bucket<'a, K, V>);
+    pub struct FullBucket<'a, K, V>(Bucket<'a, K, V>);
+    pub struct MutEmptyBucket<'a, K, V>(MutBucket<'a, K, V>);
+    pub struct MutFullBucket<'a, K, V>(MutBucket<'a, K, V>);
+
     impl FullIndex {
         /// Since we get the hash for free whenever we check the bucket state,
         /// this function is provided for fast access, letting us avoid
@@ -141,6 +160,16 @@ mod table {
     pub enum BucketState {
         Empty(EmptyIndex),
         Full(FullIndex),
+    }
+
+    pub enum BucketStateNg<'a, K, V> {
+        EmptyNg,
+        FullNg(FullBucket<'a, K, V>),
+    }
+
+    pub enum MutBucketStateNg<'a, K, V> {
+        MutEmptyNg(MutEmptyBucket<'a, K, V>),
+        MutFullNg(MutFullBucket<'a, K, V>),
     }
 
     /// A hash that is not zero, since we use a hash of zero to represent empty
@@ -394,6 +423,58 @@ mod table {
 
         pub fn move_iter(self) -> MoveEntries<K, V> {
             MoveEntries { table: self, idx: 0 }
+        }
+
+        pub fn buckets<'a>(&'a self) -> Buckets<'a, K, V> {
+            Buckets {
+                hashes: self.hashes,
+                keys: self.keys,
+                vals: self.vals,
+                hashes_end: self.hashes.offset(self.capacity as int)
+            }
+        }
+    }
+
+    /// Iterator over all buckets in a table.
+    pub struct Buckets<'a, K, V> {
+        hashes: *u64,
+        keys: *K,
+        vals: *V,
+        cap: uint,
+        idx: uint,
+        idx_end: uint
+    }
+
+    impl<'a, K, V> Iterator<Bucket<'a, K, V>> for Buckets<'a, K, V> {
+        fn next(&mut self) -> Option<BucketStateNg<'a, K, V>> {
+            if self.hashes != self.hashes_end {
+                // let nocopy = marker::NoCopy;
+
+                let (hash_ptr, key, val) = unsafe {(
+                    &'a *self.hashes,
+                    &'a *self.keys,
+                    &'a *self.vals
+                )};
+
+                self.hashes = self.hashes.offset(1);
+                self.keys   = self.keys.offset(1);
+                self.vals   = self.vals.offset(1);
+
+
+                return match hash_ptr {
+                    &EMPTY_BUCKET =>
+                        Some(EmptyNg),
+                    &full_hash =>
+                        Some(FullNg(FullBucket {
+                            hash: full_hash,
+                            key:  key,
+                            val:  val,
+                            idx:  
+                        }))
+                };
+            }
+
+            None
         }
     }
 
@@ -780,60 +861,52 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
     fn bucket_distance(&self, index_of_elem: &table::FullIndex) -> uint {
         // where the hash of the element that happens to reside at
         // `index_of_elem` tried to place itself first.
-        let first_probe_index = self.probe(&index_of_elem.hash(), 0);
-
         let raw_index = index_of_elem.raw_index();
 
-        if first_probe_index <= raw_index {
-             // probe just went forward
-            raw_index - first_probe_index
-        } else {
-            // probe wrapped around the hashtable
-            raw_index + (self.table.capacity() - first_probe_index)
-        }
+        (raw_index - index_of_elem.hash() as uint) & (self.table.capacity() - 1)
     }
 
     /// Search for a pre-hashed key.
-    fn search_hashed_generic(&self, hash: &table::SafeHash, is_match: |&K| -> bool)
-        -> Option<table::FullIndex> {
-        for num_probes in range(0u, self.table.size()) {
-            let probe = self.probe(hash, num_probes);
-
-            let idx = match self.table.peek(probe) {
-                table::Empty(_)  => return None, // hit an empty bucket
-                table::Full(idx) => idx
+    fn search_hashed_generic<'a>(&'a self, hash: &table::SafeHash, is_match: |&K| -> bool)
+        -> Option<table::FullBucket<'a, K, V>> {
+        let ib = (hash.inspect() as uint) & (self.table.capacity() - 1);
+        // let buckets = self.table.buckets().cycle().skip(ib);
+        for bucket in self.table.buckets_in_range(ib, ib + self.table.size()) { // inclusive?
+            let bucket = match bucket {
+                table::EmptyNg(_) => return None, // hit an empty bucket
+                table::FullNg(b) => b
             };
 
             // We can finish the search early if we hit any bucket
             // with a lower distance to initial bucket than we've probed.
-            if self.bucket_distance(&idx) < num_probes { return None }
+            if bucket.distance() + ib < bucket.raw_idx() { return None }
 
             // If the hash doesn't match, it can't be this one..
-            if *hash != idx.hash() { continue }
+            if *hash != bucket.hash() { continue }
 
-            let (k, _) = self.table.read(&idx);
+            let (k, _) = bucket.read();
 
             // If the key doesn't match, it can't be this one..
             if !is_match(k) { continue }
 
-            return Some(idx);
+            return Some(bucket);
         }
 
         return None
     }
 
-    fn search_hashed(&self, hash: &table::SafeHash, k: &K) -> Option<table::FullIndex> {
+    fn search_hashed<'a>(&'a self, hash: &table::SafeHash, k: &K) -> Option<table::FullBucket<'a, K, V>> {
         self.search_hashed_generic(hash, |k_| *k == *k_)
     }
 
-    fn search_equiv<Q: Hash<S> + Equiv<K>>(&self, q: &Q) -> Option<table::FullIndex> {
+    fn search_equiv<'a, Q: Hash<S> + Equiv<K>>(&'a self, q: &Q) -> Option<table::FullBucket<'a, K, V>> {
         self.search_hashed_generic(&self.make_hash(q), |k| q.equiv(k))
     }
 
     /// Search for a key, yielding the index if it's found in the hashtable.
     /// If you already have the hash for the key lying around, use
     /// search_hashed.
-    fn search(&self, k: &K) -> Option<table::FullIndex> {
+    fn search<'a>(&'a self, k: &K) -> Option<table::FullBucket<'a, K, V>> {
         self.search_hashed(&self.make_hash(k), k)
     }
 
@@ -921,7 +994,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         self.make_some_room(potential_new_size);
 
         let starting_index = match self.search_equiv(k) {
-            Some(idx) => idx,
+            Some(b) => b.idx(),
             None      => return None,
         };
 
@@ -953,8 +1026,8 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> Mutable for HashMap<K, V, H> {
 
 impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> Map<K, V> for HashMap<K, V, H> {
     fn find<'a>(&'a self, k: &K) -> Option<&'a V> {
-        self.search(k).map(|idx| {
-            let (_, v) = self.table.read(&idx);
+        self.search(k).map(|bucket| {
+            let (_, v) = bucket.read();
             v
         })
     }
@@ -968,8 +1041,8 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
     fn find_mut<'a>(&'a mut self, k: &K) -> Option<&'a mut V> {
         match self.search(k) {
             None => None,
-            Some(idx) => {
-                let (_, v) = self.table.read_mut(&idx);
+            Some(bucket) => {
+                let (_, v) = bucket.read_mut();
                 Some(v)
             }
         }
@@ -1024,7 +1097,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
         self.make_some_room(potential_new_size);
 
         let starting_index = match self.search(k) {
-            Some(idx) => idx,
+            Some(b) => b.idx(),
             None      => return None,
         };
 
@@ -1320,8 +1393,8 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                 let v = not_found(&k, a);
                 self.insert_hashed(hash, k, v)
             },
-            Some(idx) => {
-                let (_, v_ref) = self.table.read_mut(&idx);
+            Some(bucket) => {
+                let (_, v_ref) = bucket.read_mut();
                 found(&k, v_ref, a);
                 v_ref
             }
@@ -1355,8 +1428,8 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
     pub fn find_equiv<'a, Q: Hash<S> + Equiv<K>>(&'a self, k: &Q) -> Option<&'a V> {
         match self.search_equiv(k) {
             None      => None,
-            Some(idx) => {
-                let (_, v_ref) = self.table.read(&idx);
+            Some(bucket) => {
+                let (_, v_ref) = bucket.read();
                 Some(v_ref)
             }
         }
