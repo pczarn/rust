@@ -1160,7 +1160,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         self.search_hashed(&self.make_hash(k), k)
     }
 
-    fn pop_internal(&mut self, starting_bucket: table::FullBucket<K, V>) -> Option<V> {
+    fn pop_internal(&mut self, starting_bucket: table::FullBucket<K, V>) -> V {
         // let starting_probe = starting_index.raw_index();
 
         // let ending_probe = {
@@ -1257,7 +1257,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
 
         // Now we're done all our shifting. Return the value we grabbed
         // earlier.
-        return Some(retval);
+        return retval;
     }
 
     /// Like `pop`, but can operate on any type that is equivalent to a key.
@@ -1270,7 +1270,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         let potential_new_size = self.table.size() - 1;
         self.make_some_room(potential_new_size);
 
-        self.search_equiv(k).and_then(|bucket| {
+        self.search_equiv(k).map(|bucket| {
             unsafe{(*(self as *mut HashMap<K,V,H>)).pop_internal(bucket)}
         })
     }
@@ -1368,7 +1368,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
         let potential_new_size = self.table.size() - 1;
         self.make_some_room(potential_new_size);
 
-        self.search(k).and_then(|bucket| {
+        self.search(k).map(|bucket| {
             unsafe{(*(self as *mut HashMap<K,V,H>)).pop_internal(bucket)}
         })
     }
