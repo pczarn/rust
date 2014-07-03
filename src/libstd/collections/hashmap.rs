@@ -658,8 +658,30 @@ mod table {
                     hashes: (self.hashes as *mut u64).offset(from as int),
                     keys: (self.keys as *mut K).offset(from as int),
                     vals: (self.vals as *mut V).offset(from as int),
-                    cap: self.capacity,
                     idx: from, // & (cap - 1)
+                    cap: self.capacity,
+                }
+            }
+        }
+
+        #[inline]
+        pub fn hashes_from(&self, from: uint) -> HashesCycle {
+            unsafe {
+                HashesCycle {
+                    hashes: (self.hashes as *mut u64).offset(from as int),
+                    idx: from, // & (cap - 1)
+                    cap: self.capacity,
+                }
+            }
+        }
+
+        #[inline]
+        pub fn empty_indexes_from(&self, from: uint) -> EmptyIndexesCycle {
+            unsafe {
+                EmptyIndexesCycle {
+                    hashes: (self.hashes as *mut u64).offset(from as int),
+                    idx: from, // & (cap - 1)
+                    cap: self.capacity,
                 }
             }
         }
@@ -760,6 +782,75 @@ mod table {
                 val:  val,
                 idx:  idx
             });
+        }
+    }
+
+    /// Iterator over all buckets in a table.
+    pub struct HashesCycle {
+        hashes: *mut u64,
+        idx: uint,
+        cap: uint,
+    }
+
+    impl Iterator<(*mut u64, uint)> for HashesCycle {
+        fn next(&mut self) -> Option<(*mut u64, uint)> {
+            if self.idx == self.cap {
+                let dist = -(self.cap as int);
+                unsafe {
+                    self.hashes = self.hashes.offset(dist);
+                }
+            }
+
+            let (hash_ptr, idx) = unsafe {(
+                self.hashes,
+                self.idx
+            )};
+
+            unsafe {
+                self.hashes = self.hashes.offset(1);
+            }
+            self.idx += 1;
+
+            return Some((
+                hash_ptr,
+                idx
+            ));
+        }
+    }
+
+    /// Iterator over all buckets in a table.
+    pub struct EmptyIndexesCycle {
+        hashes: *mut u64,
+        idx: uint,
+        cap: uint,
+    }
+
+    impl Iterator<EmptyIndex> for EmptyIndexesCycle {
+        fn next(&mut self) -> Option<EmptyIndex> {
+            loop {
+                if self.idx == self.cap {
+                    unsafe {
+                        self.hashes = self.hashes.offset(-(self.cap as int));
+                    }
+                }
+
+                let (hash, idx) = unsafe{(
+                    *self.hashes,
+                    self.idx
+                )};
+
+                unsafe {
+                    self.hashes = self.hashes.offset(1);
+                }
+                self.idx += 1;
+
+                if hash == EMPTY_BUCKET {
+                    return Some(EmptyIndex {
+                        idx: (idx & (self.cap - 1)) as int,
+                        nocopy: marker::NoCopy
+                    });
+                }
+            }
         }
     }
 
@@ -1455,16 +1546,8 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
     fn insert_hashed_after(&mut self, hash: table::SafeHash, k: K, v: V) {
         // let unsfptr = ((&mut self.table) as *mut table::RawTable<K, V>);
         let ib = (hash.inspect() as uint) & (self.table.capacity() - 1);
-        for bucket in self.table.buckets_from(ib) {
-            match bucket.inspect() {
-                table::EmptyNg(empty) => {
-                    empty.put(&mut self.table, hash, k, v);
-                    return;
-                }
-                _ => {}
-            }
-        }
-        fail!("Internal HashMap error: Out of space.");
+        let idx = self.table.empty_indexes_from(ib).next().expect("Internal HashMap error: Out of space.");
+        self.table.put(idx, hash, k, v);
     }
 }
 // bug! 
