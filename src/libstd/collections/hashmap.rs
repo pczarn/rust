@@ -606,6 +606,21 @@ mod table {
         // }
 
         #[inline]
+        pub fn buckets<'a>(&'a self) -> Buckets<'a, K, V> {
+            // assert!(to <= self.capacity << 1);
+            // unsafe {
+                Buckets {
+                    hashes: self.hashes as *const u64,
+                    keys: self.keys as *const K,
+                    vals: self.vals as *const V,
+                    cap: self.capacity,
+                    idx: 0, // & (cap - 1)
+                    idx_end: self.capacity
+                }
+            // }
+        }
+
+        #[inline]
         pub fn buckets_in_range<'a>(&'a self, from: uint, to: uint) -> Buckets<'a, K, V> {
             // assert!(to <= self.capacity << 1);
             unsafe {
@@ -796,6 +811,43 @@ mod table {
         }
     }
 
+    /// Iterator over all buckets in a table.
+    pub struct FullBuckets<K, V> {
+        hashes: *const u64,
+        keys: *const K,
+        vals: *const V,
+        hashes_end: *const u64
+    }
+
+    impl<K, V> Iterator<FullBucket<K, V>> for FullBuckets<K, V> {
+        fn next(&mut self) -> Option<FullBucket<K, V>> {
+            while self.hashes != self.hashes_end {
+                let (hash_ptr, key, val) = unsafe {(
+                    self.hashes as *mut u64,
+                    self.keys as *mut K,
+                    self.vals as *mut V,
+                )};
+
+                unsafe {
+                    self.hashes = self.hashes.offset(1);
+                    self.keys   = self.keys.offset(1);
+                    self.vals   = self.vals.offset(1);
+                }
+
+                if unsafe { *hash_ptr != 0u64 } {
+                    return Some(FullBucket {
+                        hash: hash_ptr,
+                        key:  key,
+                        val:  val,
+                        idx:  0
+                    });
+                }
+            }
+
+            None
+        }
+    }
+
     // `read_all_mut` casts a `*u64` to a `*SafeHash`. Since we statically
     // ensure that a `FullIndex` points to an index with a non-zero hash,
     // and a `SafeHash` is just a `u64` with a different name, this is
@@ -826,7 +878,7 @@ mod table {
 
     /// Iterator over the entries in a table, consuming the table.
     pub struct MoveEntries<K, V> {
-        table: RawTable<K, V>,
+        pub table: RawTable<K, V>,
         hashes: *const u64,
         keys: *const K,
         vals: *const V,
@@ -881,6 +933,26 @@ mod table {
         fn size_hint(&self) -> (uint, Option<uint>) {
             let size = self.table.size() - self.elems_seen;
             (size, Some(size))
+        }
+    }
+
+    impl<K, V> MoveEntries<K, V> {
+        pub fn split_at(self, bucket: &Bucket<K, V>) -> (MoveEntries<K, V>, FullBuckets<K, V>) {
+            (
+                MoveEntries {
+                    hashes: self.hashes,
+                    keys: self.keys,
+                    vals: self.vals,
+                    hashes_end: bucket.hash as *const u64,
+                    table: self.table,
+                },
+                FullBuckets {
+                    hashes: bucket.hash as *const u64,
+                    keys: bucket.key as *const K,
+                    vals: bucket.val as *const V,
+                    hashes_end: self.hashes_end,
+                }
+            )
         }
     }
 
@@ -1553,6 +1625,16 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         if self.table.capacity() < cap {
             self.resize(cap);
         }
+
+        // let cap = self.table.capacity();
+        // let size = self.table.size();
+        // let (mut bucket, _, retval) = starting_bucket.take(&mut self.table);
+        // let mut buckets = self.table.mut_buckets_after(&bucket, size + 1); // skip?
+        // buckets.next();
+        // at least one
+        // let mut bucket = buckets.next().unwrap();
+
+        // backwards-shift all the elements after our newly-deleted one.
     }
 
     /// Resizes the internal vectors to a new capacity. It's your responsibility to:
@@ -1565,9 +1647,49 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
 
         let old_table = replace(&mut self.table, table::RawTable::new(new_capacity));
         let old_size  = old_table.size();
+        let old_cap  = old_table.capacity();
 
-        for (h, k, v) in old_table.move_iter() {
-            // self.insert_hashed_nocheck(h, k, v);
+        if new_capacity < old_cap {
+            for (h, k, v) in old_table.move_iter() {
+                self.insert_hashed_nocheck(h, k, v);
+            }
+            assert_eq!(self.table.size(), old_size);
+            return;
+        }
+
+        // for (h, k, v) in old_table.move_iter() {
+        //     if new_capacity > old_cap {
+        //         self.insert_hashed_nocheck_after(h, k, v);
+        //     } else {
+        //         self.insert_hashed_nocheck(h, k, v);
+        //     }
+        // }
+        fn find_first<K, V>(old_table: &table::RawTable<K, V>) -> table::Bucket<K, V> {
+            for bucket in old_table.buckets() {
+                match bucket.inspect() {
+                    table::FullNg(full) => {
+                        // empty = empty.replace(full);
+                        // or overwrite
+                        if full.distance(old_table.capacity()) != 0 {
+                            continue;
+                        }
+                    }
+                    _ => ()
+                }
+                return bucket;
+            }
+            fail!("Internal hashmap error")
+        }
+
+        let bucket = find_first(&old_table);
+        let (mut init, mut tail) = old_table.move_iter().split_at(&bucket);
+        for bucket in tail {
+            let h = bucket.hash();
+            let (_, k, v) = bucket.take(&mut init.table);
+            self.insert_hashed_after(h, k, v);
+        }
+
+        for (h, k, v) in init {
             self.insert_hashed_after(h, k, v);
         }
 
@@ -1697,6 +1819,44 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         // We really shouldn't be here.
         fail!("Internal HashMap error: Out of space.");
     }
+    // fn insert_hashed_nocheck_after<'a>(
+    //     &'a mut self, hash: table::SafeHash, k: K, v: V) -> &'a mut V {
+
+    //     for dib in range_inclusive(0u, self.table.size()) {
+    //         let probe = self.probe(&hash, dib);
+
+    //         let idx = match self.table.peek(probe) {
+    //             table::Empty(idx) => {
+    //                 // Found a hole!
+    //                 let fullidx  = self.table.put(idx, hash, k, v);
+    //                 let (_, val) = self.table.read_mut(&fullidx);
+    //                 return val;
+    //             },
+    //             table::Full(idx) => idx
+    //         };
+
+    //         let probe_dib = self.bucket_distance(&idx);
+
+    //         if  probe_dib < dib {
+    //             println!("robin hood at {}/{}: {} < {}", idx.raw_index(), self.table.capacity(), probe_dib, dib);
+    //             // Found a luckier bucket than me. Better steal his spot.
+    //             self.robin_hood(idx, probe_dib, hash, k, v);
+
+    //             // Now that it's stolen, just read the value's pointer
+    //             // right out of the table!
+    //             match self.table.peek(probe) {
+    //                 table::Empty(_)  => fail!("Just stole a spot, but now that spot's empty."),
+    //                 table::Full(idx) => {
+    //                     let (_, v) = self.table.read_mut(&idx);
+    //                     return v;
+    //                 }
+    //             }
+    //         }
+    //     }
+
+    //     // We really shouldn't be here.
+    //     fail!("Internal HashMap error: Out of space.");
+    // }
 
     /// Inserts an element which has already been hashed, returning a reference
     /// to that element inside the hashtable. This is more efficient that using
