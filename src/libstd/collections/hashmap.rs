@@ -203,13 +203,16 @@ mod table {
             *self.hash = EMPTY_BUCKET;
         }
 
-        pub fn put(self, table: &mut RawTable<K, V>, h: SafeHash, k: K, v: V) {
+        pub fn put(self, table: &mut RawTable<K, V>, h: SafeHash, k: K, v: V) -> FullBucket<K, V> {
             unsafe {
                 *self.hash = h.inspect();
                 overwrite(self.key, k);
                 overwrite(self.val, v);
             }
             table.size += 1;
+            unsafe {
+                transmute(self)
+            }
         }
     }
 
@@ -606,7 +609,7 @@ mod table {
         // }
 
         #[inline]
-        pub fn buckets<'a>(&'a self) -> Buckets<'a, K, V> {
+        pub fn buckets<'a>(&'a self) -> Buckets<K, V> {
             // assert!(to <= self.capacity << 1);
             // unsafe {
                 Buckets {
@@ -621,7 +624,7 @@ mod table {
         }
 
         #[inline]
-        pub fn buckets_in_range<'a>(&'a self, from: uint, to: uint) -> Buckets<'a, K, V> {
+        pub fn buckets_in_range<'a>(&'a self, from: uint, to: uint) -> Buckets<K, V> {
             // assert!(to <= self.capacity << 1);
             unsafe {
                 Buckets {
@@ -665,15 +668,26 @@ mod table {
         }
 
         #[inline]
-        pub fn hashes_from(&self, from: uint) -> HashesCycle {
+        pub fn hashes(&self) -> Hashes {
             unsafe {
-                HashesCycle {
-                    hashes: (self.hashes as *mut u64).offset(from as int),
-                    idx: from, // & (cap - 1)
+                Hashes {
+                    hashes: self.hashes as *mut u64,
+                    idx: 0,
                     cap: self.capacity,
                 }
             }
         }
+
+        // #[inline]
+        // pub fn hashes_from(&self, from: uint) -> HashesCycle {
+        //     unsafe {
+        //         HashesCycle {
+        //             hashes: (self.hashes as *mut u64).offset(from as int),
+        //             idx: from, // & (cap - 1)
+        //             cap: self.capacity,
+        //         }
+        //     }
+        // }
 
         #[inline]
         pub fn empty_indexes_from(&self, from: uint) -> EmptyIndexesCycle {
@@ -688,7 +702,7 @@ mod table {
     }
 
     /// Iterator over all buckets in a table.
-    pub struct Buckets<'a, K, V> {
+    pub struct Buckets<K, V> {
         hashes: *const u64,
         keys: *const K,
         vals: *const V,
@@ -697,7 +711,7 @@ mod table {
         cap: uint,
     }
 
-    impl<'a, K, V> Iterator<Bucket<K, V>> for Buckets<'a, K, V> {
+    impl<K, V> Iterator<Bucket<K, V>> for Buckets<K, V> {
         fn next(&mut self) -> Option<Bucket<K, V>> {
             if self.idx == self.idx_end {
                 return None;
@@ -786,19 +800,16 @@ mod table {
     }
 
     /// Iterator over all buckets in a table.
-    pub struct HashesCycle {
+    pub struct Hashes {
         hashes: *mut u64,
         idx: uint,
         cap: uint,
     }
 
-    impl Iterator<(*mut u64, uint)> for HashesCycle {
+    impl Iterator<(*mut u64, uint)> for Hashes {
         fn next(&mut self) -> Option<(*mut u64, uint)> {
             if self.idx == self.cap {
-                let dist = -(self.cap as int);
-                unsafe {
-                    self.hashes = self.hashes.offset(dist);
-                }
+                return None;
             }
 
             let (hash_ptr, idx) = unsafe {(
@@ -1546,8 +1557,18 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
     fn insert_hashed_after(&mut self, hash: table::SafeHash, k: K, v: V) {
         // let unsfptr = ((&mut self.table) as *mut table::RawTable<K, V>);
         let ib = (hash.inspect() as uint) & (self.table.capacity() - 1);
-        let idx = self.table.empty_indexes_from(ib).next().expect("Internal HashMap error: Out of space.");
-        self.table.put(idx, hash, k, v);
+        // let idx = self.table.empty_indexes_from(ib).next().expect("Internal HashMap error: Out of space.");
+        // self.table.put(idx, hash, k, v);
+        for bucket in self.table.buckets_from(ib) {
+            match bucket.inspect() {
+                table::EmptyNg(empty) => {
+                    empty.put(&mut self.table, hash, k, v);
+                    return;
+                }
+                _ => {}
+            }
+        }
+        fail!("Internal HashMap error: Out of space.");
     }
 }
 // bug! 
@@ -1603,39 +1624,45 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
         let potential_new_size = self.table.size() + 1;
         self.make_some_room(potential_new_size);
 
-        for dib in range_inclusive(0u, self.table.size()) {
-            let probe = self.probe(&hash, dib);
+        let mut ret = None;
+        self.overwrite_with(hash, k, v, |val_ref, val| {
+            ret = Some(replace(val_ref, val));
+        });
+        ret
 
-            let idx = match self.table.peek(probe) {
-                table::Empty(idx) => {
-                    // Found a hole!
-                    self.table.put(idx, hash, k, v);
-                    return None;
-                },
-                table::Full(idx) => idx
-            };
+        // for dib in range_inclusive(0u, self.table.size()) {
+        //     let probe = self.probe(&hash, dib);
 
-            if idx.hash() == hash {
-                let (bucket_k, bucket_v) = self.table.read_mut(&idx);
-                if k == *bucket_k {
-                    // Found an existing value.
-                    return Some(replace(bucket_v, v));
-                }
-            }
+        //     let idx = match self.table.peek(probe) {
+        //         table::Empty(idx) => {
+        //             // Found a hole!
+        //             self.table.put(idx, hash, k, v);
+        //             return None;
+        //         },
+        //         table::Full(idx) => idx
+        //     };
 
-            let probe_dib = self.bucket_distance(&idx);
+        //     if idx.hash() == hash {
+        //         let (bucket_k, bucket_v) = self.table.read_mut(&idx);
+        //         if k == *bucket_k {
+        //             // Found an existing value.
+        //             return Some(replace(bucket_v, v));
+        //         }
+        //     }
 
-            if probe_dib < dib {
-                // Found a luckier bucket. This implies that the key does not
-                // already exist in the hashtable. Just do a robin hood
-                // insertion, then.
-                self.robin_hood(idx, probe_dib, hash, k, v);
-                return None;
-            }
-        }
+        //     let probe_dib = self.bucket_distance(&idx);
 
-        // We really shouldn't be here.
-        fail!("Internal HashMap error: Out of space.");
+        //     if probe_dib < dib {
+        //         // Found a luckier bucket. This implies that the key does not
+        //         // already exist in the hashtable. Just do a robin hood
+        //         // insertion, then.
+        //         self.robin_hood(idx, probe_dib, hash, k, v);
+        //         return None;
+        //     }
+        // }
+
+        // // We really shouldn't be here.
+        // fail!("Internal HashMap error: Out of space.");
     }
 
     fn pop(&mut self, k: &K) -> Option<V> {
@@ -1856,90 +1883,107 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
     /// and a reference to the existing element will be returned.
     fn insert_hashed_nocheck<'a>(
         &'a mut self, hash: table::SafeHash, k: K, v: V) -> &'a mut V {
+        self.overwrite_with(hash, k, v, |_, _| ())
+    }
 
-        for dib in range_inclusive(0u, self.table.size()) {
-            let probe = self.probe(&hash, dib);
+    fn overwrite_with<'a>(
+        &'a mut self, hash: table::SafeHash, k: K, v: V,
+        found_existing: |&mut V, V|
+    ) -> &'a mut V {
 
-            let idx = match self.table.peek(probe) {
-                table::Empty(idx) => {
+        let ib = (hash.inspect() as uint) & (self.table.capacity() - 1);
+        for bucket in self.table.buckets_in_range(ib, ib + self.table.size() + 1) {
+            let bucket = match bucket.inspect() {
+                table::EmptyNg(bucket) => {
                     // Found a hole!
-                    let fullidx  = self.table.put(idx, hash, k, v);
-                    let (_, val) = self.table.read_mut(&fullidx);
+                    let (_, val) = bucket.put(&mut self.table, hash, k, v)
+                                         .read_mut(&mut self.table);
                     return val;
                 },
-                table::Full(idx) => idx
+                table::FullNg(bucket) => bucket
             };
 
-            if idx.hash() == hash {
-                let (bucket_k, bucket_v) = self.table.read_mut(&idx);
+            if bucket.hash() == hash {
+                let (bucket_k, bucket_v) = bucket.read_mut(&mut self.table);
                 // FIXME #12147 the conditional return confuses
                 // borrowck if we return bucket_v directly
                 let bv: *mut V = bucket_v;
                 if k == *bucket_k {
                     // Key already exists. Get its reference.
+                    found_existing(bucket_v, v);
                     return unsafe {&mut *bv};
                 }
             }
 
-            let probe_dib = self.bucket_distance(&idx);
+            let probe_dib = bucket.distance(self.table.capacity());
 
-            if  probe_dib < dib {
+            if probe_dib + ib < bucket.raw_idx() {
                 // Found a luckier bucket than me. Better steal his spot.
-                self.robin_hood(idx, probe_dib, hash, k, v);
+                let mut robin_bucket = bucket;
+                let (mut hash, mut k, mut v) = (hash.inspect(), k, v);
+                let mut index = bucket.idx(self.table.capacity());
+                let mut dib_param = probe_dib;
+                // self.robin_hood(idx, probe_dib, hash, k, v);
+                // fn robin_hood(&mut self, mut index: table::FullIndex, mut dib_param: uint,
+                //      mut hash: table::SafeHash, mut k: K, mut v: V) {
+                'outer: loop {
+                    let (old_hash, old_key, old_val) = robin_bucket.replace(hash, k, v);
+
+                    // let mut probe = self.probe_next(index.raw_index());
+
+                    // for dib in range(dib_param + 1, self.table.size()) {
+                    //     let full_index = match self.table.peek(probe) {
+                    //         table::Empty(idx) => {
+                    //             // Finally. A hole!
+                    //             self.table.put(idx, old_hash, old_key, old_val);
+                    //             return;
+                    //         },
+                    //         table::Full(idx) => idx
+                    //     };
+
+                    for bucket in robin_bucket.buckets_after() {
+                        let bucket = match bucket.inspect() {
+                            table::EmptyNg(bucket) => {
+                                // Found a hole!
+                                bucket.put(&mut self.table, old_hash, old_key, old_val);
+                                break 'outer;
+                            },
+                            table::FullNg(bucket) => bucket
+                        };
+
+                        let probe_dib = bucket.distance(self.table.capacity());
+
+                        // Robin hood! Steal the spot.
+                        if probe_dib < dib {
+                            index = full_index;
+                            dib_param = probe_dib;
+                            hash = old_hash;
+                            k = old_key;
+                            v = old_val;
+                            continue 'outer;
+                        }
+                    }
+
+                    fail!("HashMap fatal error: 100% load factor?");
+                }
 
                 // Now that it's stolen, just read the value's pointer
                 // right out of the table!
-                match self.table.peek(probe) {
-                    table::Empty(_)  => fail!("Just stole a spot, but now that spot's empty."),
-                    table::Full(idx) => {
-                        let (_, v) = self.table.read_mut(&idx);
-                        return v;
-                    }
-                }
+                // match self.table.peek(probe) {
+                //     table::Empty(_)  => fail!("Just stole a spot, but now that spot's empty."),
+                //     table::Full(idx) => {
+                //         let (_, v) = self.table.read_mut(&idx);
+                //         return v;
+                //     }
+                // }
+                let (_, v) = bucket.read_mut(&mut self.table);
+                return v;
             }
         }
 
         // We really shouldn't be here.
         fail!("Internal HashMap error: Out of space.");
     }
-    // fn insert_hashed_nocheck_after<'a>(
-    //     &'a mut self, hash: table::SafeHash, k: K, v: V) -> &'a mut V {
-
-    //     for dib in range_inclusive(0u, self.table.size()) {
-    //         let probe = self.probe(&hash, dib);
-
-    //         let idx = match self.table.peek(probe) {
-    //             table::Empty(idx) => {
-    //                 // Found a hole!
-    //                 let fullidx  = self.table.put(idx, hash, k, v);
-    //                 let (_, val) = self.table.read_mut(&fullidx);
-    //                 return val;
-    //             },
-    //             table::Full(idx) => idx
-    //         };
-
-    //         let probe_dib = self.bucket_distance(&idx);
-
-    //         if  probe_dib < dib {
-    //             println!("robin hood at {}/{}: {} < {}", idx.raw_index(), self.table.capacity(), probe_dib, dib);
-    //             // Found a luckier bucket than me. Better steal his spot.
-    //             self.robin_hood(idx, probe_dib, hash, k, v);
-
-    //             // Now that it's stolen, just read the value's pointer
-    //             // right out of the table!
-    //             match self.table.peek(probe) {
-    //                 table::Empty(_)  => fail!("Just stole a spot, but now that spot's empty."),
-    //                 table::Full(idx) => {
-    //                     let (_, v) = self.table.read_mut(&idx);
-    //                     return v;
-    //                 }
-    //             }
-    //         }
-    //     }
-
-    //     // We really shouldn't be here.
-    //     fail!("Internal HashMap error: Out of space.");
-    // }
 
     /// Inserts an element which has already been hashed, returning a reference
     /// to that element inside the hashtable. This is more efficient that using
