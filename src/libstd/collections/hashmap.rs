@@ -237,6 +237,15 @@ mod table {
         pub unsafe fn clear(&mut self) {
             *self.hash = EMPTY_BUCKET;
         }
+
+        pub fn put(self, table: &mut RawTable<K, V>, h: SafeHash, k: K, v: V) {
+            *self.hash = h.inspect();
+            unsafe {
+                overwrite(self.key, k);
+                overwrite(self.val, v);
+            }
+            table.size += 1;
+        }
     }
 
     impl<'a, K, V> FullBucket<'a, K, V> {
@@ -298,6 +307,37 @@ mod table {
 
         pub fn distance(&self, capacity: uint) -> uint {
             (self.idx - *self.hash as uint) & (capacity - 1)
+        }
+
+        pub fn pop(self, table: &mut RawTable<K, V>) -> V {
+            let cap = table.capacity();
+            let size = table.size();
+            let (mut bucket, _, retval) = self.take(table);
+
+            let mut buckets = table.mut_buckets_after(&bucket, size + 1); // skip?
+            buckets.next();
+
+            // backwards-shift all the elements after our newly-deleted one.
+            for next_bucket in buckets {
+                match next_bucket.inspect() {
+                    MutFullNg(full) => {
+                        // empty = empty.replace(full);
+                        // or overwrite
+                        if full.distance(cap) != 0 {
+                            unsafe {
+                                bucket = bucket.overwrite(full);
+                            }
+                            continue;
+                        }
+                    }
+                    _ => ()
+                }
+                unsafe {
+                    bucket.clear();
+                }
+                break;
+            }
+            return retval;
         }
     }
 
@@ -581,7 +621,16 @@ mod table {
         }
 
         pub fn move_iter(self) -> MoveEntries<K, V> {
-            MoveEntries { table: self, idx: 0 }
+            // MoveEntries { table: self, idx: 0 }
+            MoveEntries {
+                hashes: self.hashes as *const u64,
+                keys: self.keys as *const K,
+                vals: self.vals as *const V,
+                hashes_end: unsafe {
+                    self.hashes.offset(self.capacity as int) as *const u64
+                },
+                table: self,
+            }
         }
 
         // pub fn buckets<'a>(&'a self) -> Buckets<'a, K, V> {
@@ -620,6 +669,19 @@ mod table {
                     cap: self.capacity,
                     idx: idx,
                     idx_end: idx + range
+                }
+            }
+        }
+
+        #[inline]
+        pub fn mut_buckets_from<'a>(&'a mut self, from: uint) -> MutBucketsCycle<'a, K, V> {
+            unsafe {
+                MutBucketsCycle {
+                    hashes: (self.hashes as *mut u64).offset(from as int),
+                    keys: (self.keys as *mut K).offset(from as int),
+                    vals: (self.vals as *mut V).offset(from as int),
+                    cap: self.capacity,
+                    idx: from, // & (cap - 1)
                 }
             }
         }
@@ -672,6 +734,49 @@ mod table {
             // });
 
             return Some(Bucket {
+                hash: hash_ptr,
+                key:  key,
+                val:  val,
+                idx:  idx
+            });
+        }
+    }
+
+    /// Iterator over all buckets in a table.
+    pub struct MutBucketsCycle<'a, K, V> {
+        hashes: *mut u64,
+        keys: *mut K,
+        vals: *mut V,
+        idx: uint,
+        cap: uint,
+    }
+
+    impl<'a, K, V> Iterator<MutBucket<'a, K, V>> for MutBucketsCycle<'a, K, V> {
+        fn next(&mut self) -> Option<MutBucket<'a, K, V>> {
+            if self.idx == self.cap {
+                let dist = -(self.cap as int);
+                unsafe {
+                    self.hashes = self.hashes.offset(dist);
+                    self.keys   = self.keys.offset(dist);
+                    self.vals   = self.vals.offset(dist);
+                }
+            }
+
+            let (hash_ptr, key, val, idx) = unsafe {(
+                &'a mut *self.hashes,
+                &'a mut *self.keys,
+                &'a mut *self.vals,
+                self.idx
+            )};
+
+            unsafe {
+                self.hashes = self.hashes.offset(1);
+                self.keys   = self.keys.offset(1);
+                self.vals   = self.vals.offset(1);
+            }
+            self.idx += 1;
+
+            return Some(MutBucket {
                 hash: hash_ptr,
                 key:  key,
                 val:  val,
@@ -759,7 +864,10 @@ mod table {
     /// Iterator over the entries in a table, consuming the table.
     pub struct MoveEntries<K, V> {
         table: RawTable<K, V>,
-        idx: uint
+        hashes: *const u64,
+        keys: *const K,
+        vals: *const V,
+        hashes_end: *const u64,
     }
 
     impl<'a, K, V> Iterator<(&'a K, &'a V)> for Entries<'a, K, V> {
@@ -815,18 +923,52 @@ mod table {
 
     impl<K, V> Iterator<(SafeHash, K, V)> for MoveEntries<K, V> {
         fn next(&mut self) -> Option<(SafeHash, K, V)> {
-            while self.idx < self.table.capacity() {
-                let i = self.idx;
-                self.idx += 1;
+        //     while self.idx < self.table.capacity() {
+        //         let i = self.idx;
+        //         self.idx += 1;
 
-                match self.table.peek(i) {
-                    Empty(_) => {},
-                    Full(idx) => {
-                        let h = idx.hash();
-                        let (_, k, v) = self.table.take(idx);
-                        return Some((h, k, v));
+        //         match self.table.peek(i) {
+        //             Empty(_) => {},
+        //             Full(idx) => {
+        //                 let h = idx.hash();
+        //                 let (_, k, v) = self.table.take(idx);
+        //                 return Some((h, k, v));
+        //             }
+        //         }
+        //     }
+
+        //     None
+        // fn next(&mut self) -> Option<Bucket<'a, K, V>> {
+            while self.hashes != self.hashes_end {
+                let (hash, key, val) = unsafe {(
+                    self.hashes,
+                    self.keys,
+                    self.vals,
+                )};
+
+                unsafe {
+                    self.hashes = self.hashes.offset(1);
+                    self.keys   = self.keys.offset(1);
+                    self.vals   = self.vals.offset(1);
+
+                    if *hash != 0u64 {
+                        return Some((
+                            SafeHash {
+                                hash: *hash,
+                            },
+                            ptr::read(key),
+                            ptr::read(val)
+                        ));
                     }
                 }
+
+                // println!("{:?}", Bucket {
+                //     hash: hash_ptr,
+                //     key:  key,
+                //     val:  val,
+                //     idx:  idx
+                // });
+
             }
 
             None
@@ -1274,6 +1416,21 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
             unsafe{(*(self as *mut HashMap<K,V,H>)).pop_internal(bucket)}
         })
     }
+
+    fn insert_hashed_after(&mut self, hash: table::SafeHash, k: K, v: V) {
+        let unsfptr = ((&mut self.table) as *mut table::RawTable<K, V>);
+        let ib = (hash.inspect() as uint) & (self.table.capacity() - 1);
+        for bucket in self.table.mut_buckets_from(ib) {
+            match bucket.inspect() {
+                table::MutEmptyNg(empty) => {
+                    empty.put(unsafe{&mut *unsfptr}, hash, k, v);
+                    return;
+                }
+                _ => {}
+            }
+        }
+        fail!("Internal HashMap error: Out of space.");
+    }
 }
 // bug! 
 
@@ -1370,6 +1527,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
 
         self.search(k).map(|bucket| {
             unsafe{(*(self as *mut HashMap<K,V,H>)).pop_internal(bucket)}
+            // bucket.into_mut().pop(&mut self.table)
         })
     }
 
@@ -1444,7 +1602,8 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         let old_size  = old_table.size();
 
         for (h, k, v) in old_table.move_iter() {
-            self.insert_hashed_nocheck(h, k, v);
+            // self.insert_hashed_nocheck(h, k, v);
+            self.insert_hashed_after(h, k, v);
         }
 
         assert_eq!(self.table.size(), old_size);
