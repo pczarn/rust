@@ -264,6 +264,8 @@ mod table {
             let key = self.key as *mut K as *const K;
             let val = self.val as *mut V as *const V;
 
+            unsafe { *self.hash = EMPTY_BUCKET; }
+
             // self.size -= 1;
             table.size -= 1;
 
@@ -458,33 +460,6 @@ mod table {
                 let ret = RawTable::new_uninitialized(capacity);
                 set_memory(ret.hashes, 0u8, capacity);
                 ret
-            }
-        }
-
-        /// Reads a bucket at a given index, returning an enum indicating whether
-        /// there's anything there or not. You need to match on this enum to get
-        /// the appropriate types to pass on to most of the other functions in
-        /// this module.
-        pub fn peek(&self, index: uint) -> BucketState {
-            debug_assert!(index < self.capacity);
-
-            let idx  = index as int;
-            let hash = unsafe { *self.hashes.offset(idx) };
-
-            let nocopy = marker::NoCopy;
-
-            match hash {
-                EMPTY_BUCKET =>
-                    Empty(EmptyIndex {
-                        idx:    idx,
-                        nocopy: nocopy
-                    }),
-                full_hash =>
-                    Full(FullIndex {
-                        idx:    idx,
-                        hash:   SafeHash { hash: full_hash },
-                        nocopy: nocopy,
-                    })
             }
         }
 
@@ -1260,10 +1235,10 @@ mod table {
         fn drop(&mut self) {
             // This is in reverse because we're likely to have partially taken
             // some elements out with `.move_iter()` from the front.
-            for bucket in self.buckets().reverse() {
+            for bucket in self.buckets() {
                 // Check if the size is 0, so we don't do a useless scan when
                 // dropping empty tables such as on resize.
-                if self.size == 0 { break }
+                // if self.size == 0 { break }
 
                 match bucket.inspect() {
                     EmptyNg(_)  => {},
