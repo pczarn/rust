@@ -274,6 +274,16 @@ mod table {
             )}
         }
 
+        pub fn replace(self, h: SafeHash, k: K, v: V) -> (SafeHash, K, V) {
+            unsafe {
+                let old_hash = ptr::replace(self.hash as *mut SafeHash, h);
+                let old_key  = ptr::replace(self.key,  k);
+                let old_val  = ptr::replace(self.val,  v);
+
+                (old_hash, old_key, old_val)
+            }
+        }
+
         pub fn pop(self, table: &mut RawTable<K, V>) -> V {
             let cap = table.capacity();
             let size = table.size();
@@ -1892,15 +1902,19 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
     ) -> &'a mut V {
 
         let ib = (hash.inspect() as uint) & (self.table.capacity() - 1);
-        for bucket in self.table.buckets_in_range(ib, ib + self.table.size() + 1) {
-            let bucket = match bucket.inspect() {
-                table::EmptyNg(bucket) => {
-                    // Found a hole!
-                    let (_, val) = bucket.put(&mut self.table, hash, k, v)
-                                         .read_mut(&mut self.table);
-                    return val;
+        let mut buckets = self.table.buckets_in_range(ib, ib + self.table.size() + 1);
+        loop {
+            let bucket = match buckets.next() {
+                Some(bucket) => match bucket.inspect() {
+                    table::EmptyNg(bucket) => {
+                        // Found a hole!
+                        let (_, val) = bucket.put(&mut self.table, hash, k, v)
+                                             .read_mut(&mut self.table);
+                        return val;
+                    },
+                    table::FullNg(bucket) => bucket
                 },
-                table::FullNg(bucket) => bucket
+                None => break
             };
 
             if bucket.hash() == hash {
@@ -1915,33 +1929,19 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                 }
             }
 
-            let probe_dib = bucket.distance(self.table.capacity());
+            let probe_ib = bucket.raw_idx() as int - bucket.distance(self.table.capacity()) as int;
 
-            if probe_dib + ib < bucket.raw_idx() {
+            if (ib as int) < probe_ib {
                 // Found a luckier bucket than me. Better steal his spot.
                 let mut robin_bucket = bucket;
-                let (mut hash, mut k, mut v) = (hash.inspect(), k, v);
-                let mut index = bucket.idx(self.table.capacity());
-                let mut dib_param = probe_dib;
+                let (mut hash, mut k, mut v) = (hash, k, v);
+                // let idx = bucket.idx(self.table.capacity());
                 // self.robin_hood(idx, probe_dib, hash, k, v);
-                // fn robin_hood(&mut self, mut index: table::FullIndex, mut dib_param: uint,
-                //      mut hash: table::SafeHash, mut k: K, mut v: V) {
+                let mut robin_ib = probe_ib as uint;
                 'outer: loop {
                     let (old_hash, old_key, old_val) = robin_bucket.replace(hash, k, v);
 
-                    // let mut probe = self.probe_next(index.raw_index());
-
-                    // for dib in range(dib_param + 1, self.table.size()) {
-                    //     let full_index = match self.table.peek(probe) {
-                    //         table::Empty(idx) => {
-                    //             // Finally. A hole!
-                    //             self.table.put(idx, old_hash, old_key, old_val);
-                    //             return;
-                    //         },
-                    //         table::Full(idx) => idx
-                    //     };
-
-                    for bucket in robin_bucket.buckets_after() {
+                    for bucket in buckets {
                         let bucket = match bucket.inspect() {
                             table::EmptyNg(bucket) => {
                                 // Found a hole!
@@ -1951,12 +1951,12 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                             table::FullNg(bucket) => bucket
                         };
 
-                        let probe_dib = bucket.distance(self.table.capacity());
+                        let probe_ib = bucket.raw_idx() - bucket.distance(self.table.capacity());
 
                         // Robin hood! Steal the spot.
-                        if probe_dib < dib {
-                            index = full_index;
-                            dib_param = probe_dib;
+                        if robin_ib < probe_ib {
+                            robin_ib = probe_ib;
+                            robin_bucket = bucket;
                             hash = old_hash;
                             k = old_key;
                             v = old_val;
@@ -1969,13 +1969,6 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
 
                 // Now that it's stolen, just read the value's pointer
                 // right out of the table!
-                // match self.table.peek(probe) {
-                //     table::Empty(_)  => fail!("Just stole a spot, but now that spot's empty."),
-                //     table::Full(idx) => {
-                //         let (_, v) = self.table.read_mut(&idx);
-                //         return v;
-                //     }
-                // }
                 let (_, v) = bucket.read_mut(&mut self.table);
                 return v;
             }
