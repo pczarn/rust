@@ -109,20 +109,6 @@ mod table {
         vals:     *mut V,
     }
 
-    /// Represents an index into a `RawTable` with no key or value in it.
-    pub struct EmptyIndex {
-        idx:    int,
-        nocopy: marker::NoCopy,
-    }
-
-    /// Represents an index into a `RawTable` with a key, value, and hash
-    /// in it.
-    pub struct FullIndex {
-        idx:    int,
-        hash:   SafeHash,
-        nocopy: marker::NoCopy,
-    }
-
     pub struct Bucket<K, V> {
         hash: *mut u64,
         key:  *mut K,
@@ -164,6 +150,11 @@ mod table {
             }
         }
 
+
+        /// Get the distance of the bucket from its 'ideal' location.
+        ///
+        /// In the cited blog posts above, this is called the "distance to
+        /// initial bucket", or DIB.
         pub fn distance(&self, capacity: uint) -> uint {
             (self.idx - self.hash() as uint) & (capacity - 1)
         }
@@ -177,42 +168,12 @@ mod table {
         pub fn raw_idx(&self) -> uint {
             self.idx
         }
-
-        pub fn idx(&self) -> FullIndex {
-            FullIndex {
-                idx: self.idx as int,
-                hash: SafeHash {
-                    hash: self.hash()
-                },
-                nocopy: marker::NoCopy
-            }
-        }
     }
 
     impl<K, V> EmptyBucket<K, V> {
         #[inline]
-        pub unsafe fn overwrite(self, with: FullBucket<K, V>) -> EmptyBucket<K, V> {
-            *self.hash = *with.hash;
-            overwrite(self.key, ptr::read(with.key as *mut K as *const K));
-            overwrite(self.val, ptr::read(with.val as *mut V as *const V));
-            transmute(with)
-        }
-
-        #[inline]
         pub unsafe fn clear(&mut self) {
             *self.hash = EMPTY_BUCKET;
-        }
-
-        pub fn put(self, table: &mut RawTable<K, V>, h: SafeHash, k: K, v: V) -> FullBucket<K, V> {
-            unsafe {
-                *self.hash = h.inspect();
-                overwrite(self.key, k);
-                overwrite(self.val, v);
-            }
-            table.size += 1;
-            unsafe {
-                transmute(self)
-            }
         }
     }
 
@@ -233,49 +194,6 @@ mod table {
             self.idx
         }
 
-        pub fn idx(&self, cap: uint) -> FullIndex {
-            FullIndex {
-                idx: (self.idx & (cap - 1)) as int,
-                hash: self.hash(),
-                nocopy: marker::NoCopy
-            }
-        }
-
-        pub fn read<'a>(&self, _table: &'a RawTable<K, V>) -> (&'a K, &'a V) {
-            unsafe {
-                (&'a *self.key, &'a *self.val)
-            }
-        }
-
-        pub fn read_mut<'a>(&self, _table: &'a mut RawTable<K, V>) -> (&'a K, &'a mut V) {
-            unsafe {
-                (&'a *self.key, &'a mut *self.val)
-            }
-        }
-
-        // pub fn into_mut(self/*,  _table: &'a mut RawTable<K, V>*/) -> FullBucket<K, V> {
-        //     unsafe {
-        //         transmute(self)
-        //     }
-        // }
-
-        pub fn take(self, table: &mut RawTable<K, V>) -> (EmptyBucket<K, V>, K, V) {
-            // Drop the mutable constraint.
-            let key = self.key as *mut K as *const K;
-            let val = self.val as *mut V as *const V;
-
-            unsafe { *self.hash = EMPTY_BUCKET; }
-
-            // self.size -= 1;
-            table.size -= 1;
-
-            unsafe {(
-                transmute(self),
-                ptr::read(key),
-                ptr::read(val)
-            )}
-        }
-
         pub fn replace(self, h: SafeHash, k: K, v: V) -> (SafeHash, K, V) {
             unsafe {
                 let old_hash = ptr::replace(self.hash as *mut SafeHash, h);
@@ -286,56 +204,36 @@ mod table {
             }
         }
 
-        pub fn pop(self, table: &mut RawTable<K, V>) -> V {
-            let cap = table.capacity();
-            let size = table.size();
-            let (mut bucket, _, retval) = self.take(table);
+        // pub fn pop(self, table: &mut RawTable<K, V>) -> V {
+        //     let cap = table.capacity();
+        //     let size = table.size();
+        //     let (mut bucket, _, retval) = table.take(self);
 
-            let mut buckets = table.mut_buckets_after(&bucket, size + 1); // skip?
-            buckets.next();
+        //     let mut buckets = table.mut_buckets_after(&bucket, size + 1); // skip?
+        //     buckets.next();
 
-            // backwards-shift all the elements after our newly-deleted one.
-            for next_bucket in buckets {
-                match next_bucket.inspect() {
-                    FullNg(full) => {
-                        // empty = empty.replace(full);
-                        // or overwrite
-                        if full.distance(cap) != 0 {
-                            unsafe {
-                                bucket = bucket.overwrite(full);
-                            }
-                            continue;
-                        }
-                    }
-                    _ => ()
-                }
-                unsafe {
-                    bucket.clear();
-                }
-                break;
-            }
-            return retval;
-        }
-    }
-
-    impl FullIndex {
-        /// Since we get the hash for free whenever we check the bucket state,
-        /// this function is provided for fast access, letting us avoid
-        /// redundant trips back to the hashtable.
-        #[inline(always)]
-        pub fn hash(&self) -> SafeHash { self.hash }
-
-        /// Same comment as with `hash`.
-        #[inline(always)]
-        pub fn raw_index(&self) -> uint { self.idx as uint }
-    }
-
-    /// Represents the state of a bucket: it can either have a key/value
-    /// pair (be full) or not (be empty). You cannot `take` empty buckets,
-    /// and you cannot `put` into full buckets.
-    pub enum BucketState {
-        Empty(EmptyIndex),
-        Full(FullIndex),
+        //     // backwards-shift all the elements after our newly-deleted one.
+        //     for next_bucket in buckets {
+        //         match next_bucket.inspect() {
+        //             FullNg(full) => {
+        //                 // empty = empty.replace(full);
+        //                 // or overwrite
+        //                 if full.distance(cap) != 0 {
+        //                     unsafe {
+        //                         bucket = self.table.overwrite(bucket, full).get0();
+        //                     }
+        //                     continue;
+        //                 }
+        //             }
+        //             _ => ()
+        //         }
+        //         unsafe {
+        //             bucket.clear();
+        //         }
+        //         break;
+        //     }
+        //     return retval;
+        // }
     }
 
     pub enum BucketStateNg<K, V> {
@@ -464,44 +362,31 @@ mod table {
         }
 
         /// Gets references to the key and value at a given index.
-        pub fn read<'a>(&'a self, index: &FullIndex) -> (&'a K, &'a V) {
-            let idx = index.idx;
-
+        pub fn read<'a>(&'a self, bucket: &FullBucket<K, V>) -> (&'a K, &'a V) {
             unsafe {
-                debug_assert!(*self.hashes.offset(idx) != EMPTY_BUCKET);
-                (&'a *self.keys.offset(idx),
-                 &'a *self.vals.offset(idx))
+                (&'a *bucket.key,
+                 &'a *bucket.val)
             }
         }
 
         /// Gets references to the key and value at a given index, with the
         /// value's reference being mutable.
-        pub fn read_mut<'a>(&'a mut self, index: &FullIndex) -> (&'a K, &'a mut V) {
-            let idx = index.idx;
-
+        pub fn read_mut<'a>(&'a mut self, bucket: &FullBucket<K, V>) -> (&'a K, &'a mut V) {
             unsafe {
-                debug_assert!(*self.hashes.offset(idx) != EMPTY_BUCKET);
-                (&'a     *self.keys.offset(idx),
-                 &'a mut *self.vals.offset(idx))
+                debug_assert!(*bucket.hash != EMPTY_BUCKET);
+                (&'a     *bucket.key,
+                 &'a mut *bucket.val)
             }
         }
 
         /// Read everything, mutably.
-        pub fn read_all_mut<'a>(&'a mut self, index: &FullIndex)
+        pub fn read_all_mut<'a>(&'a mut self, bucket: &'a FullBucket<K, V>)
             -> (&'a mut SafeHash, &'a mut K, &'a mut V) {
-            let idx = index.idx;
-
             unsafe {
-                debug_assert!(*self.hashes.offset(idx) != EMPTY_BUCKET);
-                (transmute(self.hashes.offset(idx)),
-                 &'a mut *self.keys.offset(idx),
-                 &'a mut *self.vals.offset(idx))
-            }
-        }
-
-        pub fn read_mut_b<'a>(&'a mut self, bucket: &FullBucket<K, V>) -> (&'a K, &'a mut V) {
-            unsafe {
-                (&'a *bucket.key, &'a mut *bucket.val)
+                debug_assert!(*bucket.hash != EMPTY_BUCKET);
+                (transmute(bucket.hash),
+                 &'a mut *bucket.key,
+                 &'a mut *bucket.val)
             }
         }
 
@@ -512,44 +397,60 @@ mod table {
         /// slot in the hashtable.
         ///
         /// Use `make_hash` to construct a `SafeHash` to pass to this function.
-        pub fn put(&mut self, index: EmptyIndex, hash: SafeHash, k: K, v: V) -> FullIndex {
-            let idx = index.idx;
-
+        pub fn put(&mut self, bucket: EmptyBucket<K, V>, hash: SafeHash, k: K, v: V) -> FullBucket<K, V> {
             unsafe {
-                debug_assert_eq!(*self.hashes.offset(idx), EMPTY_BUCKET);
-                *self.hashes.offset(idx) = hash.inspect();
-                overwrite(&mut *self.keys.offset(idx), k);
-                overwrite(&mut *self.vals.offset(idx), v);
+                debug_assert_eq!(*bucket.hash, EMPTY_BUCKET);
+                *bucket.hash = hash.inspect();
+                overwrite(bucket.key, k);
+                overwrite(bucket.val, v);
             }
 
             self.size += 1;
 
-            FullIndex { idx: idx, hash: hash, nocopy: marker::NoCopy }
+            FullBucket {
+                hash: bucket.hash,
+                key: bucket.key,
+                val: bucket.val,
+                idx: bucket.idx,
+            }
         }
 
         /// Removes a key and value from the hashtable.
         ///
         /// This works similarly to `put`, building an `EmptyIndex` out of the
         /// taken FullIndex.
-        pub fn take(&mut self, index: FullIndex) -> (EmptyIndex, K, V) {
-            let idx  = index.idx;
+        pub fn take(&mut self, bucket: FullBucket<K, V>) -> (EmptyBucket<K, V>, K, V) {
+            // Drop the mutable constraint.
+            let key = bucket.key as *mut K as *const K;
+            let val = bucket.val as *mut V as *const V;
 
             unsafe {
-                debug_assert!(*self.hashes.offset(idx) != EMPTY_BUCKET);
-
-                *self.hashes.offset(idx) = EMPTY_BUCKET;
-
-                // Drop the mutable constraint.
-                let keys = self.keys as *const K;
-                let vals = self.vals as *const V;
-
-                let k = ptr::read(keys.offset(idx));
-                let v = ptr::read(vals.offset(idx));
-
-                self.size -= 1;
-
-                (EmptyIndex { idx: idx, nocopy: marker::NoCopy }, k, v)
+                debug_assert!(*bucket.hash != EMPTY_BUCKET);
+                *bucket.hash = EMPTY_BUCKET;
             }
+
+            self.size -= 1;
+
+            unsafe {(
+                EmptyBucket {
+                    hash: bucket.hash,
+                    key: bucket.key,
+                    val: bucket.val,
+                    idx: bucket.idx,
+                },
+                ptr::read(key),
+                ptr::read(val)
+            )}
+        }
+
+        #[inline]
+        pub unsafe fn overwrite(&mut self, spot: EmptyBucket<K, V>, with: FullBucket<K, V>)
+        -> (FullBucket<K, V>, EmptyBucket<K, V>) {
+            *spot.hash = *with.hash;
+            overwrite(spot.key, ptr::read(with.key as *mut K as *const K));
+            overwrite(spot.val, ptr::read(with.val as *mut V as *const V));
+            (transmute(spot),
+             transmute(with))
         }
 
         /// The hashtable's capacity, similar to a vector's.
@@ -690,16 +591,16 @@ mod table {
         //     }
         // }
 
-        #[inline]
-        pub fn empty_indexes_from(&self, from: uint) -> EmptyIndexesCycle {
-            unsafe {
-                EmptyIndexesCycle {
-                    hashes: (self.hashes as *mut u64).offset(from as int),
-                    idx: from, // & (cap - 1)
-                    cap: self.capacity,
-                }
-            }
-        }
+        // #[inline]
+        // pub fn empty_indexes_from(&self, from: uint) -> EmptyIndexesCycle {
+        //     unsafe {
+        //         EmptyIndexesCycle {
+        //             hashes: (self.hashes as *mut u64).offset(from as int),
+        //             idx: from, // & (cap - 1)
+        //             cap: self.capacity,
+        //         }
+        //     }
+        // }
     }
 
     /// Iterator over all buckets in a table.
@@ -821,6 +722,40 @@ mod table {
         }
     }
 
+    pub struct RevBuckets<K, V> {
+        hashes: *const u64,
+        keys: *const K,
+        vals: *const V,
+        hashes_end: *const u64,
+    }
+
+    impl<K, V> Iterator<(K, V)> for RevBuckets<K, V> {
+        fn next(&mut self) -> Option<(K, V)> {
+            loop {
+                unsafe {
+                    self.hashes = self.hashes.offset(-1);
+                    self.keys   = self.keys.offset(-1);
+                    self.vals   = self.vals.offset(-1);
+                }
+
+                if self.hashes == self.hashes_end {
+                    break
+                }
+
+                unsafe {
+                    if *self.hashes != 0u64 {
+                        return Some((
+                            ptr::read(self.keys),
+                            ptr::read(self.vals)
+                        ));
+                    }
+                }
+            }
+
+            None
+        }
+    }
+
     /// Iterator over all buckets in a table.
     pub struct BucketsCycle<K, V> {
         hashes: *mut u64,
@@ -894,41 +829,41 @@ mod table {
         }
     }
 
-    /// Iterator over all buckets in a table.
-    pub struct EmptyIndexesCycle {
-        hashes: *mut u64,
-        idx: uint,
-        cap: uint,
-    }
+    // /// Iterator over all buckets in a table.
+    // pub struct EmptyIndexesCycle {
+    //     hashes: *mut u64,
+    //     idx: uint,
+    //     cap: uint,
+    // }
 
-    impl Iterator<EmptyIndex> for EmptyIndexesCycle {
-        fn next(&mut self) -> Option<EmptyIndex> {
-            loop {
-                if self.idx == self.cap {
-                    unsafe {
-                        self.hashes = self.hashes.offset(-(self.cap as int));
-                    }
-                }
+    // impl Iterator<EmptyIndex> for EmptyIndexesCycle {
+    //     fn next(&mut self) -> Option<EmptyIndex> {
+    //         loop {
+    //             if self.idx == self.cap {
+    //                 unsafe {
+    //                     self.hashes = self.hashes.offset(-(self.cap as int));
+    //                 }
+    //             }
 
-                let (hash, idx) = unsafe{(
-                    *self.hashes,
-                    self.idx
-                )};
+    //             let (hash, idx) = unsafe{(
+    //                 *self.hashes,
+    //                 self.idx
+    //             )};
 
-                unsafe {
-                    self.hashes = self.hashes.offset(1);
-                }
-                self.idx += 1;
+    //             unsafe {
+    //                 self.hashes = self.hashes.offset(1);
+    //             }
+    //             self.idx += 1;
 
-                if hash == EMPTY_BUCKET {
-                    return Some(EmptyIndex {
-                        idx: (idx & (self.cap - 1)) as int,
-                        nocopy: marker::NoCopy
-                    });
-                }
-            }
-        }
-    }
+    //             if hash == EMPTY_BUCKET {
+    //                 return Some(EmptyIndex {
+    //                     idx: (idx & (self.cap - 1)) as int,
+    //                     nocopy: marker::NoCopy
+    //                 });
+    //             }
+    //         }
+    //     }
+    // }
 
     /// Iterator over all buckets in a table.
     pub struct MutBuckets<'a, K, V> {
@@ -1212,7 +1147,7 @@ mod table {
                         },
                         FullNg(full) => {
                             let hash = full.hash().inspect();
-                            let (k, v) = full.read(self);
+                            let (k, v) = self.read(&full);
                             *new_ht.hashes.offset(bucket.raw_idx() as int) = hash;
                             overwrite(&mut *new_ht.keys.offset(bucket.raw_idx() as int), (*k).clone());
                             overwrite(&mut *new_ht.vals.offset(bucket.raw_idx() as int), (*v).clone());
@@ -1242,7 +1177,7 @@ mod table {
 
                 match bucket.inspect() {
                     EmptyNg(_)  => {},
-                    FullNg(full) => { full.take(self); }
+                    FullNg(full) => { self.take(full); }
                 }
             }
 
@@ -1440,45 +1375,8 @@ pub struct HashMap<K, V, H = sip::SipHasher> {
 }
 
 impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
-    // Probe the `idx`th bucket for a given hash, returning the index of the
-    // target bucket.
-    //
-    // This exploits the power-of-two size of the hashtable. As long as this
-    // is always true, we can use a bitmask of cap-1 to do modular arithmetic.
-    //
-    // Prefer using this with increasing values of `idx` rather than repeatedly
-    // calling `probe_next`. This reduces data-dependencies between loops, which
-    // can help the optimizer, and certainly won't hurt it. `probe_next` is
-    // simply for convenience, and is no more efficient than `probe`.
-    fn probe(&self, hash: &table::SafeHash, idx: uint) -> uint {
-        let hash_mask = self.table.capacity() - 1;
-
-        // So I heard a rumor that unsigned overflow is safe in rust..
-        ((hash.inspect() as uint) + idx) & hash_mask
-    }
-
-    // Generate the next probe in a sequence. Prefer using 'probe' by itself,
-    // but this can sometimes be useful.
-    fn probe_next(&self, probe: uint) -> uint {
-        let hash_mask = self.table.capacity() - 1;
-        (probe + 1) & hash_mask
-    }
-
     fn make_hash<X: Hash<S>>(&self, x: &X) -> table::SafeHash {
         table::make_hash(&self.hasher, x)
-    }
-
-    /// Get the distance of the bucket at the given index that it lies
-    /// from its 'ideal' location.
-    ///
-    /// In the cited blog posts above, this is called the "distance to
-    /// initial bucket", or DIB.
-    fn bucket_distance(&self, index_of_elem: &table::FullIndex) -> uint {
-        // where the hash of the element that happens to reside at
-        // `index_of_elem` tried to place itself first.
-        let raw_index = index_of_elem.raw_index();
-
-        (raw_index - index_of_elem.hash().inspect() as uint) & (self.table.capacity() - 1)
     }
 
     /// Search for a pre-hashed key.
@@ -1499,7 +1397,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
             // If the hash doesn't match, it can't be this one..
             if *hash != bucket.hash() { continue }
 
-            let (k, _) = bucket.read(&self.table);
+            let (k, _) = self.table.read(&bucket);
 
             // If the key doesn't match, it can't be this one..
             if !is_match(k) { continue }
@@ -1526,43 +1424,12 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
     }
 
     fn pop_internal(&mut self, starting_bucket: table::FullBucket<K, V>) -> V {
-        // let starting_probe = starting_index.raw_index();
-
-        // let ending_probe = {
-        //     let mut probe = self.probe_next(starting_probe);
-        //     for _ in range(0u, self.table.size()) {
-        //         match self.table.peek(probe) {
-        //             table::Empty(_) => {}, // empty bucket. this is the end of our shifting.
-        //             table::Full(idx) => {
-        //                 // Bucket that isn't us, which has a non-zero probe distance.
-        //                 // This isn't the ending index, so keep searching.
-        //                 if self.bucket_distance(&idx) != 0 {
-        //                     probe = self.probe_next(probe);
-        //                     continue;
-        //                 }
-
-        //                 // if we do have a bucket_distance of zero, we're at the end
-        //                 // of what we need to shift.
-        //             }
-        //         }
-        //         break;
-        //     }
-
-        //     probe
-        // };
-
-        // let (_, _, retval) = self.table.take(starting_index);
-
-        // let mut      probe = starting_probe;
-        // let mut next_probe = self.probe_next(probe);
         let cap = self.table.capacity();
         let size = self.table.size();
-        let (mut bucket, _, retval) = starting_bucket.take(&mut self.table);
+        let (mut bucket, _, retval) = self.table.take(starting_bucket);
 
-        let mut buckets = self.table.mut_buckets_after(&bucket, size + 1); // skip?
+        let mut buckets = self.table.mut_buckets_after(&bucket, size + 1);
         buckets.next();
-        // at least one
-        // let mut bucket = buckets.next().unwrap();
 
         // backwards-shift all the elements after our newly-deleted one.
         for next_bucket in buckets {
@@ -1572,7 +1439,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                     // or overwrite
                     if full.distance(cap) != 0 {
                         unsafe {
-                            bucket = bucket.overwrite(full);
+                            bucket = self.table.overwrite(bucket, full).val1();
                         }
                         continue;
                     }
@@ -1580,45 +1447,12 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                 _ => ()
             }
             unsafe {
+                // Done the backwards shift, but there's still an element left!
+                // Empty it out.
                 bucket.clear();
             }
             break;
         }
-        // while next_probe != ending_probe {
-        //     match self.table.peek(next_probe) {
-        //         table::Empty(_) => {
-        //             // nothing to shift in. just empty it out.
-        //             match self.table.peek(probe) {
-        //                 table::Empty(_) => {},
-        //                 table::Full(idx) => { self.table.take(idx); }
-        //             }
-        //         },
-        //         table::Full(next_idx) => {
-        //             // something to shift. move it over!
-        //             let next_hash = next_idx.hash();
-        //             let (_, next_key, next_val) = self.table.take(next_idx);
-        //             match self.table.peek(probe) {
-        //                 table::Empty(idx) => {
-        //                     self.table.put(idx, next_hash, next_key, next_val);
-        //                 },
-        //                 table::Full(idx) => {
-        //                     let (emptyidx, _, _) = self.table.take(idx);
-        //                     self.table.put(emptyidx, next_hash, next_key, next_val);
-        //                 }
-        //             }
-        //         }
-        //     }
-
-        //     probe = next_probe;
-        //     next_probe = self.probe_next(next_probe);
-        // }
-
-        // // Done the backwards shift, but there's still an element left!
-        // // Empty it out.
-        // match self.table.peek(probe) {
-        //     table::Empty(_) => {},
-        //     table::Full(idx) => { self.table.take(idx); }
-        // }
 
         // Now we're done all our shifting. Return the value we grabbed
         // earlier.
@@ -1641,14 +1475,13 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
     }
 
     fn insert_hashed_after(&mut self, hash: table::SafeHash, k: K, v: V) {
-        // let unsfptr = ((&mut self.table) as *mut table::RawTable<K, V>);
         let ib = (hash.inspect() as uint) & (self.table.capacity() - 1);
         // let idx = self.table.empty_indexes_from(ib).next().expect("Internal HashMap error: Out of space.");
         // self.table.put(idx, hash, k, v);
         for bucket in self.table.buckets_from(ib) {
             match bucket.inspect() {
                 table::EmptyNg(empty) => {
-                    empty.put(&mut self.table, hash, k, v);
+                    self.table.put(empty, hash, k, v);
                     return;
                 }
                 _ => {}
@@ -1675,7 +1508,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> Mutable for HashMap<K, V, H> {
         for bucket in self.table.buckets() {
             match bucket.inspect() {
                 table::EmptyNg(_)  => {},
-                table::FullNg(full) => { full.take(&mut self.table); }
+                table::FullNg(full) => { self.table.take(full); }
             }
         }
     }
@@ -1684,7 +1517,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> Mutable for HashMap<K, V, H> {
 impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> Map<K, V> for HashMap<K, V, H> {
     fn find<'a>(&'a self, k: &K) -> Option<&'a V> {
         self.search(k).map(|bucket| {
-            let (_, v) = bucket.read(&self.table);
+            let (_, v) = self.table.read(&bucket);
             v
         })
     }
@@ -1698,7 +1531,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
     fn find_mut<'a>(&'a mut self, k: &K) -> Option<&'a mut V> {
         match self.search(k) {
             Some(bucket) => {
-                let (_, v) = bucket.read_mut(&mut self.table);
+                let (_, v) = self.table.read_mut(&bucket);
                 Some(v)
             }
             _ => None
@@ -1881,7 +1714,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         let (mut init, mut tail) = old_table.move_iter().split_at(&bucket);
         for bucket in tail {
             let h = bucket.hash();
-            let (_, k, v) = bucket.take(&mut init.table);
+            let (_, k, v) = init.table.take(bucket);
             self.insert_hashed_after(h, k, v);
         }
 
@@ -1933,8 +1766,8 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                 Some(bucket) => match bucket.inspect() {
                     table::EmptyNg(bucket) => {
                         // Found a hole!
-                        let (_, val) = bucket.put(&mut self.table, hash, k, v)
-                                             .read_mut(&mut self.table);
+                        let bucket = self.table.put(bucket, hash, k, v);
+                        let (_, val) = self.table.read_mut(&bucket);
                         return val;
                     },
                     table::FullNg(bucket) => bucket
@@ -1946,7 +1779,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
             };
 
             if bucket.hash() == hash {
-                let (bucket_k, bucket_v) = bucket.read_mut(&mut self.table);
+                let (bucket_k, bucket_v) = self.table.read_mut(&bucket);
                 // FIXME #12147 the conditional return confuses
                 // borrowck if we return bucket_v directly
                 let bv: *mut V = bucket_v;
@@ -1968,10 +1801,10 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                     let bucket = match bucket.inspect() {
                         table::EmptyNg(bucket) => {
                             // Found a hole!
-                            let bucket = bucket.put(&mut self.table, hash, k, v);
+                            let bucket = self.table.put(bucket, hash, k, v);
                             // Now that it's stolen, just read the value's pointer
                             // right out of the table!
-                            let (_, v) = bucket.read_mut(&mut self.table);
+                            let (_, v) = self.table.read_mut(&bucket);
                             return v;
                         },
                         table::FullNg(bucket) => bucket
@@ -2082,7 +1915,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         {
             match self.search_hashed(&hash, &k) {
                 Some(bucket) => {
-                    let (_, v_ref) = bucket.read_mut(&mut self.table);
+                    let (_, v_ref) = self.table.read_mut(&bucket);
                     found(&k, v_ref, a);
                     return v_ref;
                 }
@@ -2124,7 +1957,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         match self.search_equiv(k) {
             None      => None,
             Some(bucket) => {
-                let (_, v_ref) = bucket.read(&self.table);
+                let (_, v_ref) = self.table.read(&bucket);
                 Some(v_ref)
             }
         }
