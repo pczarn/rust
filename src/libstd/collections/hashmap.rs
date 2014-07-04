@@ -32,7 +32,7 @@ mod table {
     use cmp;
     use hash::{Hash, Hasher};
     use iter::range_step_inclusive;
-    use iter::{Iterator, range};
+    use iter::{Iterator, DoubleEndedIterator, Rev, range};
     use kinds::marker;
     use mem::{min_align_of, size_of};
     use mem::{overwrite, transmute};
@@ -589,11 +589,27 @@ mod table {
         }
 
         pub fn iter<'a>(&'a self) -> Entries<'a, K, V> {
-            Entries { table: self, idx: 0, elems_seen: 0 }
+            Entries {
+                hashes: self.hashes as *const u64,
+                keys: self.keys as *const K,
+                vals: self.vals as *const V,
+                hashes_end: unsafe {
+                    self.hashes.offset(self.capacity as int) as *const u64
+                },
+                elems_left: self.size(),
+            }
         }
 
         pub fn mut_iter<'a>(&'a mut self) -> MutEntries<'a, K, V> {
-            MutEntries { table: self, idx: 0, elems_seen: 0 }
+            MutEntries {
+                hashes: self.hashes as *const u64,
+                keys: self.keys as *const K,
+                vals: self.vals as *const V,
+                hashes_end: unsafe {
+                    self.hashes.offset(self.capacity as int) as *const u64
+                },
+                elems_left: self.size(),
+            }
         }
 
         pub fn move_iter(self) -> MoveEntries<K, V> {
@@ -721,6 +737,8 @@ mod table {
         cap: uint,
     }
 
+
+
     impl<K, V> Iterator<Bucket<K, V>> for Buckets<K, V> {
         fn next(&mut self) -> Option<Bucket<K, V>> {
             if self.idx == self.idx_end {
@@ -763,6 +781,68 @@ mod table {
                 val:  val,
                 idx:  idx
             });
+        }
+    }
+
+    impl<K, V> DoubleEndedIterator<Bucket<K, V>> for Buckets<K, V> {
+        fn next_back(&mut self) -> Option<Bucket<K, V>> {
+            if self.idx == self.idx_end {
+                return None;
+            }
+
+            if self.idx == self.cap {
+                let dist = -(self.cap as int);
+                unsafe {
+                    self.hashes = self.hashes.offset(dist);
+                    self.keys   = self.keys.offset(dist);
+                    self.vals   = self.vals.offset(dist);
+                }
+            }
+
+            unsafe {
+                self.hashes = self.hashes.offset(-1);
+                self.keys   = self.keys.offset(-1);
+                self.vals   = self.vals.offset(-1);
+            }
+            self.idx_end -= 1;
+
+            let (hash_ptr, key, val, idx) = unsafe {(
+                self.hashes as *mut u64,
+                self.keys as *mut K,
+                self.vals as *mut V,
+                self.idx_end
+            )};
+
+            // println!("{:?}", Bucket {
+            //     hash: hash_ptr,
+            //     key:  key,
+            //     val:  val,
+            //     idx:  idx
+            // });
+
+            return Some(Bucket {
+                hash: hash_ptr,
+                key:  key,
+                val:  val,
+                idx:  idx
+            });
+        }
+    }
+
+    impl<K, V> Buckets<K, V> {
+        #[inline]
+        fn reverse(self) -> Rev<Buckets<K, V>> {
+            let dist = (self.idx_end - self.idx) as int;
+            unsafe {
+                Buckets {
+                    hashes: self.hashes.offset(dist),
+                    keys: self.keys.offset(dist),
+                    vals: self.vals.offset(dist),
+                    idx: self.idx,
+                    idx_end: self.idx_end,
+                    cap: self.cap,
+                }.rev()
+            }
         }
     }
 
@@ -976,16 +1056,20 @@ mod table {
 
     /// Iterator over shared references to entries in a table.
     pub struct Entries<'a, K, V> {
-        table: &'a RawTable<K, V>,
-        idx: uint,
-        elems_seen: uint,
+        hashes: *const u64,
+        keys: *const K,
+        vals: *const V,
+        hashes_end: *const u64,
+        elems_left: uint,
     }
 
     /// Iterator over mutable references to entries in a table.
     pub struct MutEntries<'a, K, V> {
-        table: &'a mut RawTable<K, V>,
-        idx: uint,
-        elems_seen: uint,
+        hashes: *const u64,
+        keys: *const K,
+        vals: *const V,
+        hashes_end: *const u64,
+        elems_left: uint,
     }
 
     /// Iterator over the entries in a table, consuming the table.
@@ -999,15 +1083,24 @@ mod table {
 
     impl<'a, K, V> Iterator<(&'a K, &'a V)> for Entries<'a, K, V> {
         fn next(&mut self) -> Option<(&'a K, &'a V)> {
-            while self.idx < self.table.capacity() {
-                let i = self.idx;
-                self.idx += 1;
+            while self.hashes != self.hashes_end {
+                let (hash_ptr, key, val) = unsafe {(
+                    self.hashes as *mut u64,
+                    self.keys as *mut K,
+                    self.vals as *mut V,
+                )};
 
-                match self.table.peek(i) {
-                    Empty(_)  => {},
-                    Full(idx) => {
-                        self.elems_seen += 1;
-                        return Some(self.table.read(&idx));
+                unsafe {
+                    self.hashes = self.hashes.offset(1);
+                    self.keys   = self.keys.offset(1);
+                    self.vals   = self.vals.offset(1);
+
+                    if *hash_ptr != 0u64  {
+                        self.elems_left -= 1;
+                        return Some((
+                            &'a *key,
+                            &'a *val
+                        ));
                     }
                 }
             }
@@ -1016,25 +1109,30 @@ mod table {
         }
 
         fn size_hint(&self) -> (uint, Option<uint>) {
-            let size = self.table.size() - self.elems_seen;
-            (size, Some(size))
+            (self.elems_left, Some(self.elems_left))
         }
     }
 
     impl<'a, K, V> Iterator<(&'a K, &'a mut V)> for MutEntries<'a, K, V> {
         fn next(&mut self) -> Option<(&'a K, &'a mut V)> {
-            while self.idx < self.table.capacity() {
-                let i = self.idx;
-                self.idx += 1;
+            while self.hashes != self.hashes_end {
+                let (hash_ptr, key, val) = unsafe {(
+                    self.hashes as *mut u64,
+                    self.keys as *mut K,
+                    self.vals as *mut V,
+                )};
 
-                match self.table.peek(i) {
-                    Empty(_)  => {},
-                    // the transmute here fixes:
-                    // error: lifetime of `self` is too short to guarantee its contents
-                    //        can be safely reborrowed
-                    Full(idx) => unsafe {
-                        self.elems_seen += 1;
-                        return Some(transmute(self.table.read_mut(&idx)));
+                unsafe {
+                    self.hashes = self.hashes.offset(1);
+                    self.keys   = self.keys.offset(1);
+                    self.vals   = self.vals.offset(1);
+
+                    if *hash_ptr != 0u64  {
+                        self.elems_left -= 1;
+                        return Some((
+                            &'a     *key,
+                            &'a mut *val
+                        ));
                     }
                 }
             }
@@ -1043,8 +1141,7 @@ mod table {
         }
 
         fn size_hint(&self) -> (uint, Option<uint>) {
-            let size = self.table.size() - self.elems_seen;
-            (size, Some(size))
+            (self.elems_left, Some(self.elems_left))
         }
     }
 
@@ -1132,17 +1229,21 @@ mod table {
             unsafe {
                 let mut new_ht = RawTable::new_uninitialized(self.capacity());
 
-                for i in range(0, self.capacity()) {
-                    match self.peek(i) {
-                        Empty(_)  => {
-                            *new_ht.hashes.offset(i as int) = EMPTY_BUCKET;
+                for (bucket, new_b) in self.buckets().zip(new_ht.buckets()) {
+                    match bucket.inspect() {
+                        EmptyNg(_)  => {
+                            *new_ht.hashes.offset(bucket.raw_idx() as int) = EMPTY_BUCKET;
+                            // new_b.clear();
                         },
-                        Full(idx) => {
-                            let hash = idx.hash().inspect();
-                            let (k, v) = self.read(&idx);
-                            *new_ht.hashes.offset(i as int) = hash;
-                            overwrite(&mut *new_ht.keys.offset(i as int), (*k).clone());
-                            overwrite(&mut *new_ht.vals.offset(i as int), (*v).clone());
+                        FullNg(full) => {
+                            let hash = full.hash().inspect();
+                            let (k, v) = full.read(self);
+                            *new_ht.hashes.offset(bucket.raw_idx() as int) = hash;
+                            overwrite(&mut *new_ht.keys.offset(bucket.raw_idx() as int), (*k).clone());
+                            overwrite(&mut *new_ht.vals.offset(bucket.raw_idx() as int), (*v).clone());
+                            // unsafe {
+                            //     new_b.overwrite(&mut new_ht.table, full.hash());
+                            // }
                         }
                     }
                 }
@@ -1159,14 +1260,14 @@ mod table {
         fn drop(&mut self) {
             // This is in reverse because we're likely to have partially taken
             // some elements out with `.move_iter()` from the front.
-            for i in range_step_inclusive(self.capacity as int - 1, 0, -1) {
+            for bucket in self.buckets().reverse() {
                 // Check if the size is 0, so we don't do a useless scan when
                 // dropping empty tables such as on resize.
                 if self.size == 0 { break }
 
-                match self.peek(i as uint) {
-                    Empty(_)  => {},
-                    Full(idx) => { self.take(idx); }
+                match bucket.inspect() {
+                    EmptyNg(_)  => {},
+                    FullNg(full) => { full.take(self); }
                 }
             }
 
