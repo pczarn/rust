@@ -1834,57 +1834,6 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         }
     }
 
-    /// Perform robin hood bucket stealing at the given 'index'. You must
-    /// also pass that probe's "distance to initial bucket" so we don't have
-    /// to recalculate it, as well as the total number of probes already done
-    /// so we have some sort of upper bound on the number of probes to do.
-    ///
-    /// 'hash', 'k', and 'v' are the elements to robin hood into the hashtable.
-    fn robin_hood(&mut self, mut index: table::FullIndex, mut dib_param: uint,
-                  mut hash: table::SafeHash, mut k: K, mut v: V) {
-        'outer: loop {
-            let (old_hash, old_key, old_val) = {
-                let (old_hash_ref, old_key_ref, old_val_ref) =
-                        self.table.read_all_mut(&index);
-
-                let old_hash = replace(old_hash_ref, hash);
-                let old_key  = replace(old_key_ref,  k);
-                let old_val  = replace(old_val_ref,  v);
-
-                (old_hash, old_key, old_val)
-            };
-
-            let mut probe = self.probe_next(index.raw_index());
-
-            for dib in range(dib_param + 1, self.table.size()) {
-                let full_index = match self.table.peek(probe) {
-                    table::Empty(idx) => {
-                        // Finally. A hole!
-                        self.table.put(idx, old_hash, old_key, old_val);
-                        return;
-                    },
-                    table::Full(idx) => idx
-                };
-
-                let probe_dib = self.bucket_distance(&full_index);
-
-                // Robin hood! Steal the spot.
-                if probe_dib < dib {
-                    index = full_index;
-                    dib_param = probe_dib;
-                    hash = old_hash;
-                    k = old_key;
-                    v = old_val;
-                    continue 'outer;
-                }
-
-                probe = self.probe_next(probe);
-            }
-
-            fail!("HashMap fatal error: 100% load factor?");
-        }
-    }
-
     /// Insert a pre-hashed key-value pair, without first checking
     /// that there's enough room in the buckets. Returns a reference to the
     /// newly insert value.
@@ -1914,7 +1863,10 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                     },
                     table::FullNg(bucket) => bucket
                 },
-                None => break
+                None => {
+                    // We really shouldn't be here.
+                    fail!("Internal HashMap error: Out of space.");
+                }
             };
 
             if bucket.hash() == hash {
@@ -1933,19 +1885,16 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
 
             if (ib as int) < probe_ib {
                 // Found a luckier bucket than me. Better steal his spot.
-                let mut robin_bucket = bucket;
-                let (mut hash, mut k, mut v) = (hash, k, v);
-                // let idx = bucket.idx(self.table.capacity());
-                // self.robin_hood(idx, probe_dib, hash, k, v);
+                // let mut robin_bucket = bucket;
+                let (old_hash, old_key, old_val) = bucket.replace(hash, k, v);
+                let (mut hash, mut k, mut v) = (old_hash, old_key, old_val);
                 let mut robin_ib = probe_ib as uint;
                 'outer: loop {
-                    let (old_hash, old_key, old_val) = robin_bucket.replace(hash, k, v);
-
                     for bucket in buckets {
                         let bucket = match bucket.inspect() {
                             table::EmptyNg(bucket) => {
                                 // Found a hole!
-                                bucket.put(&mut self.table, old_hash, old_key, old_val);
+                                bucket.put(&mut self.table, hash, k, v);
                                 break 'outer;
                             },
                             table::FullNg(bucket) => bucket
@@ -1956,11 +1905,12 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                         // Robin hood! Steal the spot.
                         if robin_ib < probe_ib {
                             robin_ib = probe_ib;
-                            robin_bucket = bucket;
+                            // robin_bucket = bucket;
+                            let (old_hash, old_key, old_val) = bucket.replace(hash, k, v);
                             hash = old_hash;
                             k = old_key;
                             v = old_val;
-                            continue 'outer;
+                            continue;
                         }
                     }
 
@@ -1973,9 +1923,6 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                 return v;
             }
         }
-
-        // We really shouldn't be here.
-        fail!("Internal HashMap error: Out of space.");
     }
 
     /// Inserts an element which has already been hashed, returning a reference
