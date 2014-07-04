@@ -1596,10 +1596,10 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> Mutable for HashMap<K, V, H> {
         // for the map to be reused but has a downside: reserves permanently.
         self.resize_policy.reserve(self.table.size());
 
-        for i in range(0, self.table.capacity()) {
-            match self.table.peek(i) {
-                table::Empty(_)  => {},
-                table::Full(idx) => { self.table.take(idx); }
+        for bucket in self.table.buckets() {
+            match bucket.inspect() {
+                table::EmptyNg(_)  => {},
+                table::FullNg(full) => { full.take(&mut self.table); }
             }
         }
     }
@@ -1885,42 +1885,37 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
 
             if (ib as int) < probe_ib {
                 // Found a luckier bucket than me. Better steal his spot.
-                // let mut robin_bucket = bucket;
                 let (old_hash, old_key, old_val) = bucket.replace(hash, k, v);
                 let (mut hash, mut k, mut v) = (old_hash, old_key, old_val);
                 let mut robin_ib = probe_ib as uint;
-                'outer: loop {
-                    for bucket in buckets {
-                        let bucket = match bucket.inspect() {
-                            table::EmptyNg(bucket) => {
-                                // Found a hole!
-                                bucket.put(&mut self.table, hash, k, v);
-                                break 'outer;
-                            },
-                            table::FullNg(bucket) => bucket
-                        };
+                for bucket in buckets {
+                    let bucket = match bucket.inspect() {
+                        table::EmptyNg(bucket) => {
+                            // Found a hole!
+                            let bucket = bucket.put(&mut self.table, hash, k, v);
+                            // Now that it's stolen, just read the value's pointer
+                            // right out of the table!
+                            let (_, v) = bucket.read_mut(&mut self.table);
+                            return v;
+                        },
+                        table::FullNg(bucket) => bucket
+                    };
 
-                        let probe_ib = bucket.raw_idx() - bucket.distance(self.table.capacity());
+                    let probe_ib = bucket.raw_idx() - bucket.distance(self.table.capacity());
 
-                        // Robin hood! Steal the spot.
-                        if robin_ib < probe_ib {
-                            robin_ib = probe_ib;
-                            // robin_bucket = bucket;
-                            let (old_hash, old_key, old_val) = bucket.replace(hash, k, v);
-                            hash = old_hash;
-                            k = old_key;
-                            v = old_val;
-                            continue;
-                        }
+                    // Robin hood! Steal the spot.
+                    if robin_ib < probe_ib {
+                        robin_ib = probe_ib;
+                        // robin_bucket = bucket;
+                        let (old_hash, old_key, old_val) = bucket.replace(hash, k, v);
+                        hash = old_hash;
+                        k = old_key;
+                        v = old_val;
+                        continue;
                     }
-
-                    fail!("HashMap fatal error: 100% load factor?");
                 }
 
-                // Now that it's stolen, just read the value's pointer
-                // right out of the table!
-                let (_, v) = bucket.read_mut(&mut self.table);
-                return v;
+                fail!("HashMap fatal error: 100% load factor?");
             }
         }
     }
