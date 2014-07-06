@@ -105,8 +105,6 @@ mod table {
         capacity: uint,
         size:     uint,
         hashes:   *mut u64,
-        keys:     *mut K,
-        vals:     *mut V,
     }
 
     pub struct Bucket<K, V> {
@@ -277,8 +275,6 @@ mod table {
                     size: 0,
                     capacity: 0,
                     hashes: 0 as *mut u64,
-                    keys: 0 as *mut K,
-                    vals: 0 as *mut V
                 };
             }
             let hashes_size = capacity.checked_mul(&size_of::<u64>())
@@ -296,7 +292,7 @@ mod table {
             // This is great in theory, but in practice getting the alignment
             // right is a little subtle. Therefore, calculating offsets has been
             // factored out into a different function.
-            let (malloc_alignment, hash_offset, keys_offset, vals_offset, size) =
+            let (malloc_alignment, hash_offset, _, _, size) =
                 calculate_offsets(
                     hashes_size, min_align_of::<u64>(),
                     keys_size,   min_align_of::< K >(),
@@ -305,16 +301,37 @@ mod table {
             let buffer = allocate(size, malloc_alignment);
 
             let hashes = buffer.offset(hash_offset as int) as *mut u64;
-            let keys   = buffer.offset(keys_offset as int) as *mut K;
-            let vals   = buffer.offset(vals_offset as int) as *mut V;
 
             RawTable {
                 capacity: capacity,
                 size:     0,
                 hashes:   hashes,
-                keys:     keys,
-                vals:     vals,
             }
+        }
+
+        fn as_ptrs(&self) -> (*const u64, *const K, *const V) {
+            let hashes_size = self.capacity * size_of::<u64>();
+            let keys_size = self.capacity * size_of::<K>();
+            let vals_size = self.capacity * size_of::<V>();
+
+            let (_, hash_offset, keys_offset, vals_offset, _) =
+                calculate_offsets(
+                    hashes_size, min_align_of::<u64>(),
+                    keys_size,   min_align_of::< K >(),
+                    vals_size,   min_align_of::< V >());
+
+            let buffer = self.hashes as *mut u8 as *const u8;
+
+            unsafe {
+                (buffer.offset(hash_offset as int) as *const u64,
+                 buffer.offset(keys_offset as int) as *const K,
+                 buffer.offset(vals_offset as int) as *const V)
+            }
+        }
+
+        fn as_mut_ptrs(&self) -> (*mut u64, *mut K, *mut V) {
+            let (h, k, v) = self.as_ptrs();
+            (h as *mut u64, k as *mut K, v as *mut V)
         }
 
         /// Creates a new raw table from a given capacity. All buckets are
@@ -431,10 +448,11 @@ mod table {
         }
 
         pub fn iter<'a>(&'a self) -> Entries<'a, K, V> {
+            let (hashes, keys, vals) = self.as_ptrs();
             Entries {
-                hashes: self.hashes as *const u64,
-                keys: self.keys as *const K,
-                vals: self.vals as *const V,
+                hashes: hashes,
+                keys: keys,
+                vals: vals,
                 hashes_end: unsafe {
                     self.hashes.offset(self.capacity as int) as *const u64
                 },
@@ -443,10 +461,11 @@ mod table {
         }
 
         pub fn mut_iter<'a>(&'a mut self) -> MutEntries<'a, K, V> {
+            let (hashes, keys, vals) = self.as_ptrs();
             MutEntries {
-                hashes: self.hashes as *const u64,
-                keys: self.keys as *const K,
-                vals: self.vals as *const V,
+                hashes: hashes,
+                keys: keys,
+                vals: vals,
                 hashes_end: unsafe {
                     self.hashes.offset(self.capacity as int) as *const u64
                 },
@@ -455,11 +474,11 @@ mod table {
         }
 
         pub fn move_iter(self) -> MoveEntries<K, V> {
-            // MoveEntries { table: self, idx: 0 }
+            let (hashes, keys, vals) = self.as_ptrs();
             MoveEntries {
-                hashes: self.hashes as *const u64,
-                keys: self.keys as *const K,
-                vals: self.vals as *const V,
+                hashes: hashes,
+                keys: keys,
+                vals: vals,
                 hashes_end: unsafe {
                     self.hashes.offset(self.capacity as int) as *const u64
                 },
@@ -468,11 +487,11 @@ mod table {
         }
 
         pub fn move_iter_wrapping(&mut self) -> MoveEntriesWrapping<K, V> {
-            // MoveEntries { table: self, idx: 0 }
+            let (hashes, keys, vals) = self.as_ptrs();
             MoveEntriesWrapping {
-                hashes: self.hashes as *const u64,
-                keys: self.keys as *const K,
-                vals: self.vals as *const V,
+                hashes: hashes,
+                keys: keys,
+                vals: vals,
                 hashes_end: unsafe {
                     self.hashes.offset(self.capacity as int) as *const u64
                 },
@@ -491,12 +510,13 @@ mod table {
 
         #[inline]
         pub fn buckets<'a>(&'a self) -> Buckets<K, V> {
+            let (hashes, keys, vals) = self.as_ptrs();
             // assert!(to <= self.capacity << 1);
             // unsafe {
                 Buckets {
-                    hashes: self.hashes as *const u64,
-                    keys: self.keys as *const K,
-                    vals: self.vals as *const V,
+                    hashes: hashes,
+                    keys: keys,
+                    vals: vals,
                     cap: self.capacity,
                     idx: 0, // & (cap - 1)
                     idx_end: self.capacity
@@ -506,12 +526,13 @@ mod table {
 
         #[inline]
         pub fn buckets_in_range<'a>(&'a self, from: uint, to: uint) -> Buckets<K, V> {
+            let (hashes, keys, vals) = self.as_ptrs();
             // assert!(to <= self.capacity << 1);
             unsafe {
                 Buckets {
-                    hashes: (self.hashes as *const u64).offset(from as int),
-                    keys: (self.keys as *const K).offset(from as int),
-                    vals: (self.vals as *const V).offset(from as int),
+                    hashes: hashes.offset(from as int),
+                    keys: keys.offset(from as int),
+                    vals: vals.offset(from as int),
                     cap: self.capacity,
                     idx: from, // & (cap - 1)
                     idx_end: to
@@ -537,11 +558,12 @@ mod table {
 
         #[inline]
         pub fn buckets_from(&self, from: uint) -> BucketsCycle<K, V> {
+            let (hashes, keys, vals) = self.as_mut_ptrs();
             unsafe {
                 BucketsCycle {
-                    hashes: (self.hashes as *mut u64).offset(from as int),
-                    keys: (self.keys as *mut K).offset(from as int),
-                    vals: (self.vals as *mut V).offset(from as int),
+                    hashes: hashes.offset(from as int),
+                    keys: keys.offset(from as int),
+                    vals: vals.offset(from as int),
                     idx: from, // & (cap - 1)
                     cap: self.capacity,
                 }
@@ -550,9 +572,10 @@ mod table {
 
         #[inline]
         pub fn hashes(&self) -> Hashes {
+            let (hashes, _, _) = self.as_mut_ptrs();
             unsafe {
                 Hashes {
-                    hashes: self.hashes as *mut u64,
+                    hashes: hashes,
                     idx: 0,
                     cap: self.capacity,
                 }
@@ -1157,19 +1180,20 @@ mod table {
         fn clone(&self) -> RawTable<K, V> {
             unsafe {
                 let mut new_ht = RawTable::new_uninitialized(self.capacity());
+                let (new_hashes, new_keys, new_vals) = new_ht.as_mut_ptrs();
 
                 for (bucket, new_b) in self.buckets().zip(new_ht.buckets()) {
                     match bucket.inspect() {
                         Empty(_)  => {
-                            *new_ht.hashes.offset(bucket.raw_idx() as int) = EMPTY_BUCKET;
+                            *new_hashes.offset(bucket.raw_idx() as int) = EMPTY_BUCKET;
                             // new_b.clear();
                         },
                         Full(full) => {
                             let hash = full.hash().inspect();
                             let (k, v) = self.read(&full);
-                            *new_ht.hashes.offset(bucket.raw_idx() as int) = hash;
-                            overwrite(&mut *new_ht.keys.offset(bucket.raw_idx() as int), (*k).clone());
-                            overwrite(&mut *new_ht.vals.offset(bucket.raw_idx() as int), (*v).clone());
+                            *new_hashes.offset(bucket.raw_idx() as int) = hash;
+                            overwrite(&mut *new_keys.offset(bucket.raw_idx() as int), (*k).clone());
+                            overwrite(&mut *new_vals.offset(bucket.raw_idx() as int), (*v).clone());
                             // unsafe {
                             //     new_b.overwrite(&mut new_ht.table, full.hash());
                             // }
