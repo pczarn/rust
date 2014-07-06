@@ -272,6 +272,15 @@ mod table {
         /// Does not initialize the buckets. The caller should ensure they,
         /// at the very least, set every hash to EMPTY_BUCKET.
         unsafe fn new_uninitialized(capacity: uint) -> RawTable<K, V> {
+            if capacity == 0 {
+                return RawTable {
+                    size: 0,
+                    capacity: 0,
+                    hashes: 0 as *mut u64,
+                    keys: 0 as *mut K,
+                    vals: 0 as *mut V
+                };
+            }
             let hashes_size = capacity.checked_mul(&size_of::<u64>())
                                       .expect("capacity overflow");
             let keys_size = capacity.checked_mul(&size_of::< K >())
@@ -401,7 +410,6 @@ mod table {
             )}
         }
 
-        #[inline]
         pub unsafe fn overwrite(&mut self, spot: EmptyBucket<K, V>, with: FullBucket<K, V>)
         -> (FullBucket<K, V>, EmptyBucket<K, V>) {
             *spot.hash = *with.hash;
@@ -1179,6 +1187,9 @@ mod table {
     #[unsafe_destructor]
     impl<K, V> Drop for RawTable<K, V> {
         fn drop(&mut self) {
+            if self.hashes.is_null() {
+                return;
+            }
             // This is in reverse because we're likely to have partially taken
             // some elements out with `.move_iter()` from the front.
             for bucket in self.buckets() {
@@ -1194,22 +1205,20 @@ mod table {
 
             assert_eq!(self.size, 0);
 
-            if self.hashes.is_not_null() {
-                let hashes_size = self.capacity * size_of::<u64>();
-                let keys_size = self.capacity * size_of::<K>();
-                let vals_size = self.capacity * size_of::<V>();
-                let (align, _, _, _, size) = calculate_offsets(hashes_size, min_align_of::<u64>(),
-                                                               keys_size, min_align_of::<K>(),
-                                                               vals_size, min_align_of::<V>());
+            let hashes_size = self.capacity * size_of::<u64>();
+            let keys_size = self.capacity * size_of::<K>();
+            let vals_size = self.capacity * size_of::<V>();
+            let (align, _, _, _, size) = calculate_offsets(hashes_size, min_align_of::<u64>(),
+                                                           keys_size, min_align_of::<K>(),
+                                                           vals_size, min_align_of::<V>());
 
-                unsafe {
-                    deallocate(self.hashes as *mut u8, size, align);
-                    // Remember how everything was allocated out of one buffer
-                    // during initialization? We only need one call to free here.
-                }
-
-                self.hashes = RawPtr::null();
+            unsafe {
+                deallocate(self.hashes as *mut u8, size, align);
+                // Remember how everything was allocated out of one buffer
+                // during initialization? We only need one call to free here.
             }
+
+            self.hashes = RawPtr::null();
         }
     }
 }
@@ -1579,7 +1588,15 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
 impl<K: Hash + Eq, V> HashMap<K, V, sip::SipHasher> {
     /// Create an empty HashMap.
     pub fn new() -> HashMap<K, V, sip::SipHasher> {
-        HashMap::with_capacity(INITIAL_CAPACITY)
+        let mut r = rand::task_rng();
+        let r0 = r.gen();
+        let r1 = r.gen();
+        let hasher = sip::SipHasher::new_with_keys(r0, r1);
+        HashMap {
+            hasher:        hasher,
+            resize_policy: DefaultResizePolicy::new(INITIAL_CAPACITY),
+            table:         table::RawTable::new(0),
+        }
     }
 
     /// Creates an empty hash map with the given initial capacity.
@@ -1597,7 +1614,11 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
     ///
     /// The creates map has the default initial capacity.
     pub fn with_hasher(hasher: H) -> HashMap<K, V, H> {
-        HashMap::with_capacity_and_hasher(INITIAL_CAPACITY, hasher)
+        HashMap {
+            hasher:        hasher,
+            resize_policy: DefaultResizePolicy::new(INITIAL_CAPACITY),
+            table:         table::RawTable::new(0),
+        }
     }
 
     /// Create an empty HashMap with space for at least `capacity`
@@ -1653,6 +1674,10 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
             return;
         }
 
+        if old_cap == 0 {
+            return;
+        }
+
         let mut buckets = old_table.move_iter_wrapping();
 
         for probe in buckets {
@@ -1696,7 +1721,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         debug_assert!(grow_at >= new_size);
 
         if cap <= grow_at {
-            let new_capacity = cap << 1;
+            let new_capacity = max(cap << 1, INITIAL_CAPACITY);
             self.resize(new_capacity);
         } else if shrink_at <= cap {
             let new_capacity = cap >> 1;
