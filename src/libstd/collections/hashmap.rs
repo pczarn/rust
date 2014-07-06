@@ -17,8 +17,7 @@ use default::Default;
 use fmt::Show;
 use fmt;
 use hash::{Hash, Hasher, sip};
-use iter::{Iterator, FilterMap, Chain, Repeat, Zip, Extendable};
-use iter::{range, range_inclusive, FromIterator};
+use iter::{Iterator, FromIterator, FilterMap, Chain, Repeat, Zip, Extendable};
 use iter;
 use mem::replace;
 use num;
@@ -148,13 +147,16 @@ mod table {
             }
         }
 
+        pub unsafe fn clear(&mut self) {
+            *self.hash = EMPTY_BUCKET;
+        }
+
         pub fn raw_idx(&self) -> uint {
             self.idx
         }
     }
 
     impl<K, V> EmptyBucket<K, V> {
-        #[inline]
         pub unsafe fn clear(&mut self) {
             *self.hash = EMPTY_BUCKET;
         }
@@ -363,17 +365,6 @@ mod table {
             }
         }
 
-        /// Read everything, mutably.
-        pub fn read_all_mut<'a>(&'a mut self, bucket: &'a FullBucket<K, V>)
-            -> (&'a mut SafeHash, &'a mut K, &'a mut V) {
-            unsafe {
-                debug_assert!(*bucket.hash != EMPTY_BUCKET);
-                (transmute(bucket.hash),
-                 &'a mut *bucket.key,
-                 &'a mut *bucket.val)
-            }
-        }
-
         /// Puts a key and value pair, along with the key's hash, into a given
         /// index in the hashtable. Note how the `EmptyIndex` is 'moved' into this
         /// function, because that slot will no longer be empty when we return!
@@ -541,18 +532,16 @@ mod table {
         }
 
         #[inline]
-        pub fn mut_buckets_after<'a>(&'a mut self, from: &EmptyBucket<K, V>, range: uint) -> MutBuckets<'a, K, V> {
+        pub fn buckets_after<'a>(&'a mut self, from: &EmptyBucket<K, V>, range: uint) -> Buckets<K, V> {
             // assert!(to <= self.capacity << 1);
             let idx = from.idx & (self.capacity - 1);
-            unsafe {
-                MutBuckets {
-                    hashes: from.hash,
-                    keys: from.key,
-                    vals: from.val,
-                    cap: self.capacity,
-                    idx: idx,
-                    idx_end: idx + range
-                }
+            Buckets {
+                hashes: from.hash as *const u64,
+                keys: from.key as *const K,
+                vals: from.val as *const V,
+                cap: self.capacity,
+                idx: idx,
+                idx_end: idx + range
             }
         }
 
@@ -570,17 +559,6 @@ mod table {
             }
         }
 
-        #[inline]
-        pub fn hashes(&self) -> Hashes {
-            let (hashes, _, _) = self.as_mut_ptrs();
-            unsafe {
-                Hashes {
-                    hashes: hashes,
-                    idx: 0,
-                    cap: self.capacity,
-                }
-            }
-        }
 
         // #[inline]
         // pub fn hashes_from(&self, from: uint) -> HashesCycle {
@@ -632,12 +610,12 @@ mod table {
                 }
             }
 
-            let (hash_ptr, key, val, idx) = unsafe {(
+            let (hash_ptr, key, val, idx) = (
                 self.hashes as *mut u64,
                 self.keys as *mut K,
                 self.vals as *mut V,
                 self.idx
-            )};
+            );
 
             unsafe {
                 self.hashes = self.hashes.offset(1);
@@ -662,67 +640,67 @@ mod table {
         }
     }
 
-    impl<K, V> DoubleEndedIterator<Bucket<K, V>> for Buckets<K, V> {
-        fn next_back(&mut self) -> Option<Bucket<K, V>> {
-            if self.idx == self.idx_end {
-                return None;
-            }
+    // impl<K, V> DoubleEndedIterator<Bucket<K, V>> for Buckets<K, V> {
+    //     fn next_back(&mut self) -> Option<Bucket<K, V>> {
+    //         if self.idx == self.idx_end {
+    //             return None;
+    //         }
 
-            if self.idx == self.cap {
-                let dist = -(self.cap as int);
-                unsafe {
-                    self.hashes = self.hashes.offset(dist);
-                    self.keys   = self.keys.offset(dist);
-                    self.vals   = self.vals.offset(dist);
-                }
-            }
+    //         if self.idx == self.cap {
+    //             let dist = -(self.cap as int);
+    //             unsafe {
+    //                 self.hashes = self.hashes.offset(dist);
+    //                 self.keys   = self.keys.offset(dist);
+    //                 self.vals   = self.vals.offset(dist);
+    //             }
+    //         }
 
-            unsafe {
-                self.hashes = self.hashes.offset(-1);
-                self.keys   = self.keys.offset(-1);
-                self.vals   = self.vals.offset(-1);
-            }
-            self.idx_end -= 1;
+    //         unsafe {
+    //             self.hashes = self.hashes.offset(-1);
+    //             self.keys   = self.keys.offset(-1);
+    //             self.vals   = self.vals.offset(-1);
+    //         }
+    //         self.idx_end -= 1;
 
-            let (hash_ptr, key, val, idx) = unsafe {(
-                self.hashes as *mut u64,
-                self.keys as *mut K,
-                self.vals as *mut V,
-                self.idx_end
-            )};
+    //         let (hash_ptr, key, val, idx) = (
+    //             self.hashes as *mut u64,
+    //             self.keys as *mut K,
+    //             self.vals as *mut V,
+    //             self.idx_end
+    //         );
 
-            // println!("{:?}", Bucket {
-            //     hash: hash_ptr,
-            //     key:  key,
-            //     val:  val,
-            //     idx:  idx
-            // });
+    //         // println!("{:?}", Bucket {
+    //         //     hash: hash_ptr,
+    //         //     key:  key,
+    //         //     val:  val,
+    //         //     idx:  idx
+    //         // });
 
-            return Some(Bucket {
-                hash: hash_ptr,
-                key:  key,
-                val:  val,
-                idx:  idx
-            });
-        }
-    }
+    //         return Some(Bucket {
+    //             hash: hash_ptr,
+    //             key:  key,
+    //             val:  val,
+    //             idx:  idx
+    //         });
+    //     }
+    // }
 
-    impl<K, V> Buckets<K, V> {
-        #[inline]
-        fn reverse(self) -> Rev<Buckets<K, V>> {
-            let dist = (self.idx_end - self.idx) as int;
-            unsafe {
-                Buckets {
-                    hashes: self.hashes.offset(dist),
-                    keys: self.keys.offset(dist),
-                    vals: self.vals.offset(dist),
-                    idx: self.idx,
-                    idx_end: self.idx_end,
-                    cap: self.cap,
-                }.rev()
-            }
-        }
-    }
+    // impl<K, V> Buckets<K, V> {
+    //     #[inline]
+    //     fn reverse(self) -> Rev<Buckets<K, V>> {
+    //         let dist = (self.idx_end - self.idx) as int;
+    //         unsafe {
+    //             Buckets {
+    //                 hashes: self.hashes.offset(dist),
+    //                 keys: self.keys.offset(dist),
+    //                 vals: self.vals.offset(dist),
+    //                 idx: self.idx,
+    //                 idx_end: self.idx_end,
+    //                 cap: self.cap,
+    //             }.rev()
+    //         }
+    //     }
+    // }
 
     pub struct MoveEntriesWrapping<K, V> {
         hashes: *const u64,
@@ -842,34 +820,34 @@ mod table {
     }
 
     /// Iterator over all buckets in a table.
-    pub struct Hashes {
-        hashes: *mut u64,
-        idx: uint,
-        cap: uint,
-    }
+    // pub struct Hashes {
+    //     hashes: *mut u64,
+    //     idx: uint,
+    //     cap: uint,
+    // }
 
-    impl Iterator<(*mut u64, uint)> for Hashes {
-        fn next(&mut self) -> Option<(*mut u64, uint)> {
-            if self.idx == self.cap {
-                return None;
-            }
+    // impl Iterator<(*mut u64, uint)> for Hashes {
+    //     fn next(&mut self) -> Option<(*mut u64, uint)> {
+    //         if self.idx == self.cap {
+    //             return None;
+    //         }
 
-            let (hash_ptr, idx) = unsafe {(
-                self.hashes,
-                self.idx
-            )};
+    //         let (hash_ptr, idx) = unsafe {(
+    //             self.hashes,
+    //             self.idx
+    //         )};
 
-            unsafe {
-                self.hashes = self.hashes.offset(1);
-            }
-            self.idx += 1;
+    //         unsafe {
+    //             self.hashes = self.hashes.offset(1);
+    //         }
+    //         self.idx += 1;
 
-            return Some((
-                hash_ptr,
-                idx
-            ));
-        }
-    }
+    //         return Some((
+    //             hash_ptr,
+    //             idx
+    //         ));
+    //     }
+    // }
 
     // /// Iterator over all buckets in a table.
     // pub struct EmptyIndexesCycle {
@@ -908,89 +886,89 @@ mod table {
     // }
 
     /// Iterator over all buckets in a table.
-    pub struct MutBuckets<'a, K, V> {
-        hashes: *mut u64,
-        keys: *mut K,
-        vals: *mut V,
-        idx: uint,
-        idx_end: uint,
-        cap: uint,
-    }
+    // pub struct MutBuckets<'a, K, V> {
+    //     hashes: *mut u64,
+    //     keys: *mut K,
+    //     vals: *mut V,
+    //     idx: uint,
+    //     idx_end: uint,
+    //     cap: uint,
+    // }
 
-    impl<'a, K, V> Iterator<Bucket<K, V>> for MutBuckets<'a, K, V> {
-        fn next(&mut self) -> Option<Bucket<K, V>> {
-            if self.idx == self.idx_end {
-                return None;
-            }
+    // impl<'a, K, V> Iterator<Bucket<K, V>> for MutBuckets<'a, K, V> {
+    //     fn next(&mut self) -> Option<Bucket<K, V>> {
+    //         if self.idx == self.idx_end {
+    //             return None;
+    //         }
 
-            if self.idx == self.cap {
-                let dist = -(self.cap as int);
-                unsafe {
-                    self.hashes = self.hashes.offset(dist);
-                    self.keys   = self.keys.offset(dist);
-                    self.vals   = self.vals.offset(dist);
-                }
-            }
+    //         if self.idx == self.cap {
+    //             let dist = -(self.cap as int);
+    //             unsafe {
+    //                 self.hashes = self.hashes.offset(dist);
+    //                 self.keys   = self.keys.offset(dist);
+    //                 self.vals   = self.vals.offset(dist);
+    //             }
+    //         }
 
-            let (hash_ptr, key, val, idx) = unsafe {(
-                &'a mut *self.hashes,
-                &'a mut *self.keys,
-                &'a mut *self.vals,
-                self.idx
-            )};
+    //         let (hash_ptr, key, val, idx) = unsafe {(
+    //             &'a mut *self.hashes,
+    //             &'a mut *self.keys,
+    //             &'a mut *self.vals,
+    //             self.idx
+    //         )};
 
-            unsafe {
-                self.hashes = self.hashes.offset(1);
-                self.keys   = self.keys.offset(1);
-                self.vals   = self.vals.offset(1);
-            }
-            self.idx += 1;
+    //         unsafe {
+    //             self.hashes = self.hashes.offset(1);
+    //             self.keys   = self.keys.offset(1);
+    //             self.vals   = self.vals.offset(1);
+    //         }
+    //         self.idx += 1;
 
-            return Some(Bucket {
-                hash: hash_ptr,
-                key:  key,
-                val:  val,
-                idx:  idx
-            });
-        }
-    }
+    //         return Some(Bucket {
+    //             hash: hash_ptr,
+    //             key:  key,
+    //             val:  val,
+    //             idx:  idx
+    //         });
+    //     }
+    // }
 
-    /// Iterator over all buckets in a table.
-    pub struct FullBuckets<K, V> {
-        hashes: *const u64,
-        keys: *const K,
-        vals: *const V,
-        hashes_end: *const u64
-    }
+    // /// Iterator over all buckets in a table.
+    // pub struct FullBuckets<K, V> {
+    //     hashes: *const u64,
+    //     keys: *const K,
+    //     vals: *const V,
+    //     hashes_end: *const u64
+    // }
 
-    impl<K, V> Iterator<FullBucket<K, V>> for FullBuckets<K, V> {
-        fn next(&mut self) -> Option<FullBucket<K, V>> {
-            while self.hashes != self.hashes_end {
-                let (hash_ptr, key, val) = unsafe {(
-                    self.hashes as *mut u64,
-                    self.keys as *mut K,
-                    self.vals as *mut V,
-                )};
+    // impl<K, V> Iterator<FullBucket<K, V>> for FullBuckets<K, V> {
+    //     fn next(&mut self) -> Option<FullBucket<K, V>> {
+    //         while self.hashes != self.hashes_end {
+    //             let (hash_ptr, key, val) = (
+    //                 self.hashes as *mut u64,
+    //                 self.keys as *mut K,
+    //                 self.vals as *mut V,
+    //             );
 
-                unsafe {
-                    self.hashes = self.hashes.offset(1);
-                    self.keys   = self.keys.offset(1);
-                    self.vals   = self.vals.offset(1);
-                }
+    //             unsafe {
+    //                 self.hashes = self.hashes.offset(1);
+    //                 self.keys   = self.keys.offset(1);
+    //                 self.vals   = self.vals.offset(1);
+    //             }
 
-                if unsafe { *hash_ptr != 0u64 } {
-                    return Some(FullBucket {
-                        hash: hash_ptr,
-                        key:  key,
-                        val:  val,
-                        idx:  0
-                    });
-                }
-            }
+    //             if unsafe { *hash_ptr != 0u64 } {
+    //                 return Some(FullBucket {
+    //                     hash: hash_ptr,
+    //                     key:  key,
+    //                     val:  val,
+    //                     idx:  0
+    //                 });
+    //             }
+    //         }
 
-            None
-        }
-    }
+    //         None
+    //     }
+    // }
 
     // `read_all_mut` casts a `*u64` to a `*SafeHash`. Since we statically
     // ensure that a `FullIndex` points to an index with a non-zero hash,
@@ -1036,11 +1014,11 @@ mod table {
     impl<'a, K, V> Iterator<(&'a K, &'a V)> for Entries<'a, K, V> {
         fn next(&mut self) -> Option<(&'a K, &'a V)> {
             while self.hashes != self.hashes_end {
-                let (hash_ptr, key, val) = unsafe {(
+                let (hash_ptr, key, val) = (
                     self.hashes as *mut u64,
                     self.keys as *mut K,
                     self.vals as *mut V,
-                )};
+                );
 
                 unsafe {
                     self.hashes = self.hashes.offset(1);
@@ -1068,11 +1046,11 @@ mod table {
     impl<'a, K, V> Iterator<(&'a K, &'a mut V)> for MutEntries<'a, K, V> {
         fn next(&mut self) -> Option<(&'a K, &'a mut V)> {
             while self.hashes != self.hashes_end {
-                let (hash_ptr, key, val) = unsafe {(
+                let (hash_ptr, key, val) = (
                     self.hashes as *mut u64,
                     self.keys as *mut K,
                     self.vals as *mut V,
-                )};
+                );
 
                 unsafe {
                     self.hashes = self.hashes.offset(1);
@@ -1097,50 +1075,14 @@ mod table {
         }
     }
 
-    impl<K, V> MoveEntries<K, V> {
-        pub fn split_at(self, bucket: &Bucket<K, V>) -> (MoveEntries<K, V>, FullBuckets<K, V>) {
-            (
-                MoveEntries {
-                    hashes: self.hashes,
-                    keys: self.keys,
-                    vals: self.vals,
-                    hashes_end: bucket.hash as *const u64,
-                    table: self.table,
-                },
-                FullBuckets {
-                    hashes: bucket.hash as *const u64,
-                    keys: bucket.key as *const K,
-                    vals: bucket.val as *const V,
-                    hashes_end: self.hashes_end,
-                }
-            )
-        }
-    }
-
     impl<K, V> Iterator<(SafeHash, K, V)> for MoveEntries<K, V> {
         fn next(&mut self) -> Option<(SafeHash, K, V)> {
-        //     while self.idx < self.table.capacity() {
-        //         let i = self.idx;
-        //         self.idx += 1;
-
-        //         match self.table.peek(i) {
-        //             Empty(_) => {},
-        //             Full(idx) => {
-        //                 let h = idx.hash();
-        //                 let (_, k, v) = self.table.take(idx);
-        //                 return Some((h, k, v));
-        //             }
-        //         }
-        //     }
-
-        //     None
-        // fn next(&mut self) -> Option<Bucket<K, V>> {
             while self.hashes != self.hashes_end {
-                let (hash, key, val) = unsafe {(
+                let (hash, key, val) = (
                     self.hashes,
                     self.keys,
                     self.vals,
-                )};
+                );
 
                 unsafe {
                     self.hashes = self.hashes.offset(1);
@@ -1157,14 +1099,6 @@ mod table {
                         ));
                     }
                 }
-
-                // println!("{:?}", Bucket {
-                //     hash: hash_ptr,
-                //     key:  key,
-                //     val:  val,
-                //     idx:  idx
-                // });
-
             }
 
             None
@@ -1182,22 +1116,24 @@ mod table {
                 let mut new_ht = RawTable::new_uninitialized(self.capacity());
                 let (new_hashes, new_keys, new_vals) = new_ht.as_mut_ptrs();
 
-                for (bucket, new_b) in self.buckets().zip(new_ht.buckets()) {
+                let mut b = new_ht.buckets();
+                for bucket in self.buckets() {
+                    let mut new_b = b.next().unwrap();
                     match bucket.inspect() {
-                        Empty(_)  => {
-                            *new_hashes.offset(bucket.raw_idx() as int) = EMPTY_BUCKET;
-                            // new_b.clear();
-                        },
                         Full(full) => {
-                            let hash = full.hash().inspect();
-                            let (k, v) = self.read(&full);
-                            *new_hashes.offset(bucket.raw_idx() as int) = hash;
-                            overwrite(&mut *new_keys.offset(bucket.raw_idx() as int), (*k).clone());
-                            overwrite(&mut *new_vals.offset(bucket.raw_idx() as int), (*v).clone());
-                            // unsafe {
-                            //     new_b.overwrite(&mut new_ht.table, full.hash());
-                            // }
+                            // let hash = full.hash().inspect();
+                            // let (k, v) = self.read(&full);
+                            // *new_hashes.offset(bucket.raw_idx() as int) = hash;
+                            // overwrite(&mut *new_keys.offset(bucket.raw_idx() as int), (*k).clone());
+                            // overwrite(&mut *new_vals.offset(bucket.raw_idx() as int), (*v).clone());
+                            unsafe {
+                                new_ht.overwrite(transmute(new_b), full);
+                            }
                         }
+                        _  => unsafe {
+                            // *new_hashes.offset(bucket.raw_idx() as int) = EMPTY_BUCKET;
+                            new_b.clear();
+                        },
                     }
                 }
 
@@ -1720,13 +1656,12 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         }
 
         for bucket in buckets {
+            if old_table.size() == 0 { break }
             match bucket.inspect() {
                 table::Full(bucket) => {
                     let h = bucket.hash();
                     let (_, k, v) = old_table.take(bucket);
                     self.insert_hashed_after(h, k, v);
-
-                    if old_table.size() == 0 { break }
                 }
                 _ => ()
             }
@@ -1770,7 +1705,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
     ) -> &'a mut V {
 
         let ib = (hash.inspect() as uint) & (self.table.capacity() - 1);
-        let mut buckets = self.table.buckets_in_range(ib, ib + self.table.size() + 1);
+        let mut buckets = self.table.buckets_in_range(ib, ib + self.table.size() + 2);
         loop {
             let bucket = match buckets.next() {
                 Some(bucket) => match bucket.inspect() {
@@ -2669,8 +2604,11 @@ mod test_map {
         let mut m = HashMap::new();
 
         assert_eq!(m.len(), 0);
+        assert_eq!(m.table.capacity(), 0);
         assert!(m.is_empty());
 
+        m.insert(0, 0);
+        m.remove(&0);
         let initial_cap = m.table.capacity();
         m.reserve(initial_cap * 2);
         let cap = m.table.capacity();
@@ -2705,9 +2643,9 @@ mod test_map {
             m.remove(&i);
         }
 
-        assert_eq!(m.table.capacity(), cap);
         assert_eq!(m.len(), i);
         assert!(!m.is_empty());
+        assert_eq!(m.table.capacity(), cap);
     }
 
     #[test]
