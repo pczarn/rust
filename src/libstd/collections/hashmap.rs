@@ -483,9 +483,7 @@ mod table {
                 hashes: hashes,
                 keys: keys,
                 vals: vals,
-                hashes_end: unsafe {
-                    self.hashes.offset(self.capacity as int) as *const u64
-                },
+                idx: 0,
                 cap: self.capacity(),
             }
         }
@@ -706,38 +704,41 @@ mod table {
         hashes: *const u64,
         keys: *const K,
         vals: *const V,
-        hashes_end: *const u64,
+        idx: uint,
         cap: uint
     }
 
     impl<K, V> Iterator<Bucket<K, V>> for MoveEntriesWrapping<K, V> {
         fn next(&mut self) -> Option<Bucket<K, V>> {
-            if self.hashes == self.hashes_end {
+            if self.idx == self.cap {
                 let dist = -(self.cap as int);
                 unsafe {
                     self.hashes = self.hashes.offset(dist);
                     self.keys   = self.keys.offset(dist);
                     self.vals   = self.vals.offset(dist);
                 }
+                self.idx = 0;
             }
 
-            let (hash_ptr, key, val) = unsafe {(
+            let (hash_ptr, key, val, idx) = (
                 self.hashes as *mut u64,
                 self.keys as *mut K,
-                self.vals as *mut V
-            )};
+                self.vals as *mut V,
+                self.idx
+            );
 
             unsafe {
                 self.hashes = self.hashes.offset(1);
                 self.keys   = self.keys.offset(1);
                 self.vals   = self.vals.offset(1);
             }
+            self.idx += 1;
 
             return Some(Bucket {
                 hash: hash_ptr,
                 key:  key,
                 val:  val,
-                idx:  0
+                idx:  idx
             });
         }
     }
@@ -1408,7 +1409,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         let size = self.table.size();
         let (mut bucket, _, retval) = self.table.take(starting_bucket);
 
-        let mut buckets = self.table.mut_buckets_after(&bucket, size + 1);
+        let mut buckets = self.table.buckets_after(&bucket, size + 1);
         buckets.next();
 
         // backwards-shift all the elements after our newly-deleted one.
