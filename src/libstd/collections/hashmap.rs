@@ -31,7 +31,6 @@ mod table {
     use clone::Clone;
     use cmp;
     use hash::{Hash, Hasher};
-    use iter::range_step_inclusive;
     use iter::{Iterator, DoubleEndedIterator, Rev, range};
     use kinds::marker;
     use mem::{min_align_of, size_of};
@@ -41,6 +40,7 @@ mod table {
     use option::{Some, None, Option};
     use ptr::RawPtr;
     use ptr::set_memory;
+    use ptr::write;
     use ptr;
     use rt::heap::{allocate, deallocate};
 
@@ -131,37 +131,22 @@ mod table {
     }
 
     impl<K, V> Bucket<K, V> {
-        pub fn inspect(self) -> BucketStateNg<K, V> {
+        pub fn inspect(self) -> BucketState<K, V> {
             match unsafe { *self.hash } {
                 EMPTY_BUCKET =>
-                    EmptyNg(EmptyBucket {
+                    Empty(EmptyBucket {
                         hash: self.hash,
                         key:  self.key,
                         val:  self.val,
                         idx:  self.idx
                     }),
                 _ =>
-                    FullNg(FullBucket {
+                    Full(FullBucket {
                         hash: self.hash,
                         key:  self.key,
                         val:  self.val,
                         idx:  self.idx
                     })
-            }
-        }
-
-
-        /// Get the distance of the bucket from its 'ideal' location.
-        ///
-        /// In the cited blog posts above, this is called the "distance to
-        /// initial bucket", or DIB.
-        pub fn distance(&self, capacity: uint) -> uint {
-            (self.idx - self.hash() as uint) & (capacity - 1)
-        }
-
-        pub fn hash(&self) -> u64 {
-            unsafe {
-                *self.hash
             }
         }
 
@@ -178,6 +163,10 @@ mod table {
     }
 
     impl<K, V> FullBucket<K, V> {
+        /// Get the distance of the bucket from its 'ideal' location.
+        ///
+        /// In the cited blog posts above, this is called the "distance to
+        /// initial bucket", or DIB.
         pub fn distance(&self, capacity: uint) -> uint {
             (self.idx - self.hash().inspect() as uint) & (capacity - 1)
         }
@@ -203,42 +192,11 @@ mod table {
                 (old_hash, old_key, old_val)
             }
         }
-
-        // pub fn pop(self, table: &mut RawTable<K, V>) -> V {
-        //     let cap = table.capacity();
-        //     let size = table.size();
-        //     let (mut bucket, _, retval) = table.take(self);
-
-        //     let mut buckets = table.mut_buckets_after(&bucket, size + 1); // skip?
-        //     buckets.next();
-
-        //     // backwards-shift all the elements after our newly-deleted one.
-        //     for next_bucket in buckets {
-        //         match next_bucket.inspect() {
-        //             FullNg(full) => {
-        //                 // empty = empty.replace(full);
-        //                 // or overwrite
-        //                 if full.distance(cap) != 0 {
-        //                     unsafe {
-        //                         bucket = self.table.overwrite(bucket, full).get0();
-        //                     }
-        //                     continue;
-        //                 }
-        //             }
-        //             _ => ()
-        //         }
-        //         unsafe {
-        //             bucket.clear();
-        //         }
-        //         break;
-        //     }
-        //     return retval;
-        // }
     }
 
-    pub enum BucketStateNg<K, V> {
-        EmptyNg(EmptyBucket<K, V>),
-        FullNg(FullBucket<K, V>),
+    pub enum BucketState<K, V> {
+        Empty(EmptyBucket<K, V>),
+        Full(FullBucket<K, V>),
     }
 
     /// A hash that is not zero, since we use a hash of zero to represent empty
@@ -401,8 +359,8 @@ mod table {
             unsafe {
                 debug_assert_eq!(*bucket.hash, EMPTY_BUCKET);
                 *bucket.hash = hash.inspect();
-                overwrite(bucket.key, k);
-                overwrite(bucket.val, v);
+                write(bucket.key, k);
+                write(bucket.val, v);
             }
 
             self.size += 1;
@@ -498,6 +456,19 @@ mod table {
                     self.hashes.offset(self.capacity as int) as *const u64
                 },
                 table: self,
+            }
+        }
+
+        pub fn move_iter_wrapping(&mut self) -> MoveEntriesWrapping<K, V> {
+            // MoveEntries { table: self, idx: 0 }
+            MoveEntriesWrapping {
+                hashes: self.hashes as *const u64,
+                keys: self.keys as *const K,
+                vals: self.vals as *const V,
+                hashes_end: unsafe {
+                    self.hashes.offset(self.capacity as int) as *const u64
+                },
+                cap: self.capacity(),
             }
         }
 
@@ -719,6 +690,46 @@ mod table {
                     cap: self.cap,
                 }.rev()
             }
+        }
+    }
+
+    pub struct MoveEntriesWrapping<K, V> {
+        hashes: *const u64,
+        keys: *const K,
+        vals: *const V,
+        hashes_end: *const u64,
+        cap: uint
+    }
+
+    impl<K, V> Iterator<Bucket<K, V>> for MoveEntriesWrapping<K, V> {
+        fn next(&mut self) -> Option<Bucket<K, V>> {
+            if self.hashes == self.hashes_end {
+                let dist = -(self.cap as int);
+                unsafe {
+                    self.hashes = self.hashes.offset(dist);
+                    self.keys   = self.keys.offset(dist);
+                    self.vals   = self.vals.offset(dist);
+                }
+            }
+
+            let (hash_ptr, key, val) = unsafe {(
+                self.hashes as *mut u64,
+                self.keys as *mut K,
+                self.vals as *mut V
+            )};
+
+            unsafe {
+                self.hashes = self.hashes.offset(1);
+                self.keys   = self.keys.offset(1);
+                self.vals   = self.vals.offset(1);
+            }
+
+            return Some(Bucket {
+                hash: hash_ptr,
+                key:  key,
+                val:  val,
+                idx:  0
+            });
         }
     }
 
@@ -1141,11 +1152,11 @@ mod table {
 
                 for (bucket, new_b) in self.buckets().zip(new_ht.buckets()) {
                     match bucket.inspect() {
-                        EmptyNg(_)  => {
+                        Empty(_)  => {
                             *new_ht.hashes.offset(bucket.raw_idx() as int) = EMPTY_BUCKET;
                             // new_b.clear();
                         },
-                        FullNg(full) => {
+                        Full(full) => {
                             let hash = full.hash().inspect();
                             let (k, v) = self.read(&full);
                             *new_ht.hashes.offset(bucket.raw_idx() as int) = hash;
@@ -1176,8 +1187,8 @@ mod table {
                 // if self.size == 0 { break }
 
                 match bucket.inspect() {
-                    EmptyNg(_)  => {},
-                    FullNg(full) => { self.take(full); }
+                    Empty(_)  => {},
+                    Full(full) => { self.take(full); }
                 }
             }
 
@@ -1386,8 +1397,8 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         // let buckets = self.table.buckets().cycle().skip(ib);
         for bucket in self.table.buckets_in_range(ib, ib + self.table.size()) { // inclusive?
             let bucket = match bucket.inspect() {
-                table::EmptyNg(_) => return None, // hit an empty bucket
-                table::FullNg(b) => b
+                table::Empty(_) => return None, // hit an empty bucket
+                table::Full(b) => b
             };
 
             // We can finish the search early if we hit any bucket
@@ -1434,7 +1445,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         // backwards-shift all the elements after our newly-deleted one.
         for next_bucket in buckets {
             match next_bucket.inspect() {
-                table::FullNg(full) => {
+                table::Full(full) => {
                     // empty = empty.replace(full);
                     // or overwrite
                     if full.distance(cap) != 0 {
@@ -1480,7 +1491,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         // self.table.put(idx, hash, k, v);
         for bucket in self.table.buckets_from(ib) {
             match bucket.inspect() {
-                table::EmptyNg(empty) => {
+                table::Empty(empty) => {
                     self.table.put(empty, hash, k, v);
                     return;
                 }
@@ -1507,8 +1518,8 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> Mutable for HashMap<K, V, H> {
 
         for bucket in self.table.buckets() {
             match bucket.inspect() {
-                table::EmptyNg(_)  => {},
-                table::FullNg(full) => { self.table.take(full); }
+                table::Empty(_)  => {},
+                table::Full(full) => { self.table.take(full); }
             }
         }
     }
@@ -1543,45 +1554,11 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
         let potential_new_size = self.table.size() + 1;
         self.make_some_room(potential_new_size);
 
-        let mut ret = None;
+        let mut retval = None;
         self.overwrite_with(hash, k, v, |val_ref, val| {
-            ret = Some(replace(val_ref, val));
+            retval = Some(replace(val_ref, val));
         });
-        ret
-
-        // for dib in range_inclusive(0u, self.table.size()) {
-        //     let probe = self.probe(&hash, dib);
-
-        //     let idx = match self.table.peek(probe) {
-        //         table::Empty(idx) => {
-        //             // Found a hole!
-        //             self.table.put(idx, hash, k, v);
-        //             return None;
-        //         },
-        //         table::Full(idx) => idx
-        //     };
-
-        //     if idx.hash() == hash {
-        //         let (bucket_k, bucket_v) = self.table.read_mut(&idx);
-        //         if k == *bucket_k {
-        //             // Found an existing value.
-        //             return Some(replace(bucket_v, v));
-        //         }
-        //     }
-
-        //     let probe_dib = self.bucket_distance(&idx);
-
-        //     if probe_dib < dib {
-        //         // Found a luckier bucket. This implies that the key does not
-        //         // already exist in the hashtable. Just do a robin hood
-        //         // insertion, then.
-        //         self.robin_hood(idx, probe_dib, hash, k, v);
-        //         return None;
-        //     }
-        // }
-
-        // // We really shouldn't be here.
-        // fail!("Internal HashMap error: Out of space.");
+        retval
     }
 
     fn pop(&mut self, k: &K) -> Option<V> {
@@ -1654,16 +1631,6 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         if self.table.capacity() < cap {
             self.resize(cap);
         }
-
-        // let cap = self.table.capacity();
-        // let size = self.table.size();
-        // let (mut bucket, _, retval) = starting_bucket.take(&mut self.table);
-        // let mut buckets = self.table.mut_buckets_after(&bucket, size + 1); // skip?
-        // buckets.next();
-        // at least one
-        // let mut bucket = buckets.next().unwrap();
-
-        // backwards-shift all the elements after our newly-deleted one.
     }
 
     /// Resizes the internal vectors to a new capacity. It's your responsibility to:
@@ -1674,7 +1641,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         assert!(self.table.size() <= new_capacity);
         assert!(num::is_power_of_two(new_capacity));
 
-        let old_table = replace(&mut self.table, table::RawTable::new(new_capacity));
+        let mut old_table = replace(&mut self.table, table::RawTable::new(new_capacity));
         let old_size  = old_table.size();
         let old_cap  = old_table.capacity();
 
@@ -1686,40 +1653,34 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
             return;
         }
 
-        // for (h, k, v) in old_table.move_iter() {
-        //     if new_capacity > old_cap {
-        //         self.insert_hashed_nocheck_after(h, k, v);
-        //     } else {
-        //         self.insert_hashed_nocheck(h, k, v);
-        //     }
-        // }
-        fn find_first<K, V>(old_table: &table::RawTable<K, V>) -> table::Bucket<K, V> {
-            for bucket in old_table.buckets() {
-                match bucket.inspect() {
-                    table::FullNg(full) => {
-                        // empty = empty.replace(full);
-                        // or overwrite
-                        if full.distance(old_table.capacity()) != 0 {
-                            continue;
-                        }
+        let mut buckets = old_table.move_iter_wrapping();
+
+        for probe in buckets {
+            match probe.inspect() {
+                table::Full(bucket) => {
+                    if bucket.distance(old_table.capacity()) == 0 {
+                        let h = bucket.hash();
+                        let (_, k, v) = old_table.take(bucket);
+                        self.insert_hashed_after(h, k, v);
+
+                        break;
                     }
-                    _ => ()
                 }
-                return bucket;
+                _ => break
             }
-            fail!("Internal hashmap error")
         }
 
-        let bucket = find_first(&old_table);
-        let (mut init, mut tail) = old_table.move_iter().split_at(&bucket);
-        for bucket in tail {
-            let h = bucket.hash();
-            let (_, k, v) = init.table.take(bucket);
-            self.insert_hashed_after(h, k, v);
-        }
+        for bucket in buckets {
+            match bucket.inspect() {
+                table::Full(bucket) => {
+                    let h = bucket.hash();
+                    let (_, k, v) = old_table.take(bucket);
+                    self.insert_hashed_after(h, k, v);
 
-        for (h, k, v) in init {
-            self.insert_hashed_after(h, k, v);
+                    if old_table.size() == 0 { break }
+                }
+                _ => ()
+            }
         }
 
         assert_eq!(self.table.size(), old_size);
@@ -1764,13 +1725,13 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         loop {
             let bucket = match buckets.next() {
                 Some(bucket) => match bucket.inspect() {
-                    table::EmptyNg(bucket) => {
+                    table::Empty(bucket) => {
                         // Found a hole!
                         let bucket = self.table.put(bucket, hash, k, v);
                         let (_, val) = self.table.read_mut(&bucket);
                         return val;
                     },
-                    table::FullNg(bucket) => bucket
+                    table::Full(bucket) => bucket
                 },
                 None => {
                     // We really shouldn't be here.
@@ -1783,6 +1744,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                 // FIXME #12147 the conditional return confuses
                 // borrowck if we return bucket_v directly
                 let bv: *mut V = bucket_v;
+                // liekly!
                 if k == *bucket_k {
                     // Key already exists. Get its reference.
                     found_existing(bucket_v, v);
@@ -1795,11 +1757,11 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
             if (ib as int) < probe_ib {
                 // Found a luckier bucket than me. Better steal his spot.
                 let (old_hash, old_key, old_val) = bucket.replace(hash, k, v);
-                let (mut hash, mut k, mut v) = (old_hash, old_key, old_val);
+                let (mut hash, mut k, mut v) = (old_hash, old_key, old_val); // !
                 let mut robin_ib = probe_ib as uint;
                 for bucket in buckets {
                     let bucket = match bucket.inspect() {
-                        table::EmptyNg(bucket) => {
+                        table::Empty(bucket) => {
                             // Found a hole!
                             let bucket = self.table.put(bucket, hash, k, v);
                             // Now that it's stolen, just read the value's pointer
@@ -1807,7 +1769,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                             let (_, v) = self.table.read_mut(&bucket);
                             return v;
                         },
-                        table::FullNg(bucket) => bucket
+                        table::Full(bucket) => bucket
                     };
 
                     let probe_ib = bucket.raw_idx() - bucket.distance(self.table.capacity());
