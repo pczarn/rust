@@ -1706,7 +1706,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
     ) -> &'a mut V {
 
         let ib = (hash.inspect() as uint) & (self.table.capacity() - 1);
-        let mut buckets = self.table.buckets_in_range(ib, ib + self.table.size() + 2);
+        let mut buckets = self.table.buckets_in_range(ib, ib + self.table.size() + 1);
         loop {
             let bucket = match buckets.next() {
                 Some(bucket) => match bucket.inspect() {
@@ -1737,13 +1737,12 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                 }
             }
 
-            let probe_ib = bucket.raw_idx() as int - bucket.distance(self.table.capacity()) as int;
+            let robin_ib = bucket.raw_idx() as int - bucket.distance(self.table.capacity()) as int;
 
-            if (ib as int) < probe_ib {
+            if (ib as int) < robin_ib {
                 // Found a luckier bucket than me. Better steal his spot.
-                let (old_hash, old_key, old_val) = bucket.replace(hash, k, v);
-                let (mut hash, mut k, mut v) = (old_hash, old_key, old_val); // !
-                let mut robin_ib = probe_ib as uint;
+                let (mut hash, mut k, mut v) = bucket.replace(hash, k, v);
+                let mut robin_ib = robin_ib as uint;
                 for bucket in buckets {
                     let bucket = match bucket.inspect() {
                         table::Empty(bucket) => {
