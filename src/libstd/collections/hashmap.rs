@@ -350,8 +350,8 @@ mod table {
         /// Gets references to the key and value at a given index.
         pub fn read<'a>(&'a self, bucket: &FullBucket<K, V>) -> (&'a K, &'a V) {
             unsafe {
-                (&'a *bucket.key,
-                 &'a *bucket.val)
+                (&*bucket.key,
+                 &*bucket.val)
             }
         }
 
@@ -360,8 +360,8 @@ mod table {
         pub fn read_mut<'a>(&'a mut self, bucket: &FullBucket<K, V>) -> (&'a K, &'a mut V) {
             unsafe {
                 debug_assert!(*bucket.hash != EMPTY_BUCKET);
-                (&'a     *bucket.key,
-                 &'a mut *bucket.val)
+                (&     *bucket.key,
+                 & mut *bucket.val)
             }
         }
 
@@ -557,6 +557,17 @@ mod table {
             }
         }
 
+        // #[inline]
+        // pub fn hashes(&self) -> Hashes {
+        //     let (hashes, _, _) = self.as_mut_ptrs();
+        //     unsafe {
+        //         Hashes {
+        //             hashes: hashes,
+        //             idx: 0,
+        //             cap: self.capacity,
+        //         }
+        //     }
+        // }
 
         // #[inline]
         // pub fn hashes_from(&self, from: uint) -> HashesCycle {
@@ -590,8 +601,6 @@ mod table {
         idx_end: uint,
         cap: uint,
     }
-
-
 
     impl<K, V> Iterator<Bucket<K, V>> for Buckets<K, V> {
         fn next(&mut self) -> Option<Bucket<K, V>> {
@@ -743,39 +752,39 @@ mod table {
         }
     }
 
-    pub struct RevBuckets<K, V> {
-        hashes: *const u64,
-        keys: *const K,
-        vals: *const V,
-        hashes_end: *const u64,
-    }
+    // pub struct RevBuckets<K, V> {
+    //     hashes: *const u64,
+    //     keys: *const K,
+    //     vals: *const V,
+    //     hashes_end: *const u64,
+    // }
 
-    impl<K, V> Iterator<(K, V)> for RevBuckets<K, V> {
-        fn next(&mut self) -> Option<(K, V)> {
-            loop {
-                unsafe {
-                    self.hashes = self.hashes.offset(-1);
-                    self.keys   = self.keys.offset(-1);
-                    self.vals   = self.vals.offset(-1);
-                }
+    // impl<K, V> Iterator<(K, V)> for RevBuckets<K, V> {
+    //     fn next(&mut self) -> Option<(K, V)> {
+    //         loop {
+    //             unsafe {
+    //                 self.hashes = self.hashes.offset(-1);
+    //                 self.keys   = self.keys.offset(-1);
+    //                 self.vals   = self.vals.offset(-1);
+    //             }
 
-                if self.hashes == self.hashes_end {
-                    break
-                }
+    //             if self.hashes == self.hashes_end {
+    //                 break
+    //             }
 
-                unsafe {
-                    if *self.hashes != 0u64 {
-                        return Some((
-                            ptr::read(self.keys),
-                            ptr::read(self.vals)
-                        ));
-                    }
-                }
-            }
+    //             unsafe {
+    //                 if *self.hashes != 0u64 {
+    //                     return Some((
+    //                         ptr::read(self.keys),
+    //                         ptr::read(self.vals)
+    //                     ));
+    //                 }
+    //             }
+    //         }
 
-            None
-        }
-    }
+    //         None
+    //     }
+    // }
 
     /// Iterator over all buckets in a table.
     pub struct BucketsCycle<K, V> {
@@ -798,9 +807,9 @@ mod table {
             }
 
             let (hash_ptr, key, val, idx) = unsafe {(
-                &'a mut *self.hashes,
-                &'a mut *self.keys,
-                &'a mut *self.vals,
+                & mut *self.hashes,
+                & mut *self.keys,
+                & mut *self.vals,
                 self.idx
             )};
 
@@ -1029,8 +1038,8 @@ mod table {
                     if *hash_ptr != 0u64  {
                         self.elems_left -= 1;
                         return Some((
-                            &'a *key,
-                            &'a *val
+                            & *key,
+                            & *val
                         ));
                     }
                 }
@@ -1061,8 +1070,8 @@ mod table {
                     if *hash_ptr != 0u64  {
                         self.elems_left -= 1;
                         return Some((
-                            &'a     *key,
-                            &'a mut *val
+                            &     *key,
+                            & mut *val
                         ));
                     }
                 }
@@ -1151,6 +1160,7 @@ mod table {
             if self.hashes.is_null() {
                 return;
             }
+            println!("size was {}", self.size);
             // This is in reverse because we're likely to have partially taken
             // some elements out with `.move_iter()` from the front.
             for bucket in self.buckets() {
@@ -1160,10 +1170,12 @@ mod table {
 
                 match bucket.inspect() {
                     Empty(_)  => {},
-                    Full(full) => { self.take(full); }
+                    Full(full) => { self.take(full);
+            println!("take one. left {}", self.size); }
                 }
             }
 
+            println!("size is {}", self.size);
             assert_eq!(self.size, 0);
 
             let hashes_size = self.capacity * size_of::<u64>();
@@ -1420,7 +1432,8 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                     // or overwrite
                     if full.distance(cap) != 0 {
                         unsafe {
-                            bucket = self.table.overwrite(bucket, full).val1();
+                            let (_, empty) = self.table.overwrite(bucket, full);
+                            bucket = empty;
                         }
                         continue;
                     }
@@ -1708,20 +1721,15 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         let ib = (hash.inspect() as uint) & (self.table.capacity() - 1);
         let mut buckets = self.table.buckets_in_range(ib, ib + self.table.size() + 1);
         loop {
-            let bucket = match buckets.next() {
-                Some(bucket) => match bucket.inspect() {
-                    table::Empty(bucket) => {
-                        // Found a hole!
-                        let bucket = self.table.put(bucket, hash, k, v);
-                        let (_, val) = self.table.read_mut(&bucket);
-                        return val;
-                    },
-                    table::Full(bucket) => bucket
+            let bucket = match buckets.next().expect("Internal HashMap error: Out of space.")
+                                             .inspect() {
+                table::Empty(bucket) => {
+                    // Found a hole!
+                    let bucket = self.table.put(bucket, hash, k, v);
+                    let (_, val) = self.table.read_mut(&bucket);
+                    return val;
                 },
-                None => {
-                    // We really shouldn't be here.
-                    fail!("Internal HashMap error: Out of space.");
-                }
+                table::Full(bucket) => bucket
             };
 
             if bucket.hash() == hash {
@@ -1729,7 +1737,6 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                 // FIXME #12147 the conditional return confuses
                 // borrowck if we return bucket_v directly
                 let bv: *mut V = bucket_v;
-                // liekly!
                 if k == *bucket_k {
                     // Key already exists. Get its reference.
                     found_existing(bucket_v, v);
@@ -2542,10 +2549,39 @@ mod test_map {
     fn test_find() {
         let mut m = HashMap::new();
         assert!(m.find(&1i).is_none());
-        m.insert(1i, 2i);
-        match m.find(&1) {
-            None => fail!(),
-            Some(v) => assert_eq!(*v, 2)
+
+        for i in range(1i, 10000) {
+            m.insert(i, i + 7);
+            match m.find(&i) {
+                None => fail!(),
+                Some(v) => assert_eq!(*v, i + 7)
+            }
+            for j in range(1i, i/100) {
+                match m.find(&j) {
+                    None => fail!(),
+                    Some(v) => assert_eq!(*v, j + 7)
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_find_copy() {
+        let mut m = HashMap::new();
+        assert!(m.find(&1i).is_none());
+
+        for i in range(1i, 10000) {
+            m.insert(i, i + 7);
+            match m.find_copy(&i) {
+                None => fail!(),
+                Some(v) => assert_eq!(v, i + 7)
+            }
+            for j in range(1i, i/100) {
+                match m.find_copy(&j) {
+                    None => fail!(),
+                    Some(v) => assert_eq!(v, j + 7)
+                }
+            }
         }
     }
 
