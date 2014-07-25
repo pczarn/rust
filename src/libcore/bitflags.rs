@@ -22,6 +22,8 @@
 //!         static FlagA       = 0x00000001,
 //!         static FlagB       = 0x00000010,
 //!         static FlagC       = 0x00000100,
+//!         static FlagAB      = FlagA.bits
+//!                            | FlagB.bits,
 //!         static FlagABC     = FlagA.bits
 //!                            | FlagB.bits
 //!                            | FlagC.bits
@@ -31,10 +33,11 @@
 //! fn main() {
 //!     let e1 = FlagA | FlagC;
 //!     let e2 = FlagB | FlagC;
-//!     assert!((e1 | e2) == FlagABC);   // union
-//!     assert!((e1 & e2) == FlagC);     // intersection
-//!     assert!((e1 - e2) == FlagA);     // set difference
-//!     assert!(!e2 == FlagA);           // set complement
+//!     assert!((e1 | e2) == FlagABC); // union
+//!     assert!((e1 & e2) == FlagC);   // intersection
+//!     assert!((e1 ^ e2) == FlagAB);  // symmetric difference
+//!     assert!((e1 - e2) == FlagA);   // set difference
+//!     assert!(!e2 == FlagA);         // set complement
 //! }
 //! ~~~
 //!
@@ -88,6 +91,7 @@
 //!
 //! - `BitOr`: union
 //! - `BitAnd`: intersection
+//! - `BitXor`: symmetric difference
 //! - `Sub`: set difference
 //! - `Not`: set complement
 //!
@@ -197,6 +201,14 @@ macro_rules! bitflags(
             #[inline]
             fn bitand(&self, other: &$BitFlags) -> $BitFlags {
                 $BitFlags { bits: self.bits & other.bits }
+            }
+        }
+
+        impl BitXor<$BitFlags, $BitFlags> for $BitFlags {
+            /// Returns the symmetric difference between the two sets of flags.
+            #[inline]
+            fn bitxor(&self, other: &$BitFlags) -> $BitFlags {
+                $BitFlags { bits: self.bits ^ other.bits }
             }
         }
 

@@ -109,8 +109,9 @@ fn test_remove(){
 fn test_operators() {
     let e1 = FlagA | FlagC;
     let e2 = FlagB | FlagC;
-    assert!((e1 | e2) == FlagABC);   // union
-    assert!((e1 & e2) == FlagC);     // intersection
-    assert!((e1 - e2) == FlagA);     // set difference
-    assert!(!e2 == FlagA);           // set complement
+    assert!((e1 | e2) == FlagABC);         // union
+    assert!((e1 & e2) == FlagC);           // intersection
+    assert!((e1 ^ e2) == (FlagA | FlagB)); // symmetric difference
+    assert!((e1 - e2) == FlagA);           // set difference
+    assert!(!e2 == FlagA);                 // set complement
 }
