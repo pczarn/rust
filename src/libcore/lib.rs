@@ -62,6 +62,7 @@
 #![deny(missing_doc)]
 
 mod macros;
+mod bitflags;
 
 #[path = "num/float_macros.rs"] mod float_macros;
 #[path = "num/int_macros.rs"]   mod int_macros;

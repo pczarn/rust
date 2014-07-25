@@ -15,6 +15,7 @@ extern crate libc;
 
 mod any;
 mod atomics;
+mod bitflags;
 mod cell;
 mod char;
 mod cmp;

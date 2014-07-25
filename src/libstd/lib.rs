@@ -198,7 +198,6 @@ fn start(argc: int, argv: *const *const u8) -> int {
 /* Exported macros */
 
 pub mod macros;
-pub mod bitflags;
 
 mod rtdeps;
 
