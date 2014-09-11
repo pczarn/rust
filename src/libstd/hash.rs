@@ -119,9 +119,9 @@ impl XxHashOrRandomSipHasher {
     }
 }
 
-impl Hasher<sip::SipState> for XxHashOrRandomSipHasher {
+impl Hasher<xxh::XxHasher64> for XxHashOrRandomSipHasher {
     #[inline]
-    fn hash<T: Hash<sip::SipState>>(&self, value: &T) -> u64 {
+    fn hash<T: Hash<xxh::XxHasher64>>(&self, value: &T) -> u64 {
         let copy: u32 = unsafe {
             mem::transmute_copy(self)
         };
