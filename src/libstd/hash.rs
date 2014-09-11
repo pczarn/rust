@@ -63,9 +63,10 @@
 
 #![experimental]
 
-pub use core_collections::hash::{Hash, Hasher, Writer, hash, sip};
+pub use core_collections::hash::{Hash, Hasher, Writer, hash, sip, xxh};
 
 use default::Default;
+use mem;
 use rand::Rng;
 use rand;
 
@@ -100,5 +101,51 @@ impl Default for RandomSipHasher {
     #[inline]
     fn default() -> RandomSipHasher {
         RandomSipHasher::new()
+    }
+}
+
+#[deriving(Clone)]
+struct XxHashOrRandomSipHasher {
+    hasher: sip::SipHasher,
+}
+
+impl XxHashOrRandomSipHasher {
+    /// Construct a new `XxHashOrRandomSipHasher` that initially uses xxhash.
+    #[inline]
+    pub fn new() -> XxHashOrRandomSipHasher {
+        XxHashOrRandomSipHasher {
+            hasher: sip::SipHasher::new_with_keys(0, 0),
+        }
+    }
+}
+
+impl Hasher<sip::SipState> for XxHashOrRandomSipHasher {
+    #[inline]
+    fn hash<T: Hash<sip::SipState>>(&self, value: &T) -> u64 {
+        let copy: u32 = unsafe {
+            mem::transmute_copy(self)
+        };
+        if copy == 0 {
+            xxh::XxHasher64::new().hash(value)
+        } else {
+            self.hasher.hash(value)
+        }
+    }
+//hash.rs:129:13: 129:47 error: expected collections::hash::Hash<collections::hash::xxh::XxState64>, found collections::hash::Hash (expected struct collections::hash::xxh::XxState64, found struct collections::hash::sip::SipState) [E0095]
+//hash.rs:129             xxh::XxHasher64::new().hash(value)
+//                        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    fn reset(&mut self) {
+        let mut r = rand::task_rng();
+        let r0 = r.gen();
+        let r1 = r.gen();
+        self.hasher = sip::SipHasher::new_with_keys(r0, r1);
+    }
+}
+
+impl Default for XxHashOrRandomSipHasher {
+    #[inline]
+    fn default() -> XxHashOrRandomSipHasher {
+        XxHashOrRandomSipHasher::new()
     }
 }

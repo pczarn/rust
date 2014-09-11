@@ -132,6 +132,20 @@ impl SafeHash {
 /// This function wraps up `hash_keyed` to be the only way outside this
 /// module to generate a SafeHash.
 pub fn make_hash<T: Hash<S>, S, H: Hasher<S>>(hasher: &H, t: &T) -> SafeHash {
+    // let hsh = match size_of::<T>() {
+    //     n @ 0..8 => {
+    //         let mut key: u64 = 0;
+    //         copy_nonoverlapping_memory(&mut key as *mut _ as *mut u8, t as *const _ as *const u8, n);
+    //         key ^= (key >> 33);
+    //         key *= 0xff51afd7ed558ccd;
+    //         key ^= (key >> 33);
+    //         key *= 0xc4ceb9fe1a85ec53;
+    //         key ^= (key >> 33);
+    //         key
+    //     }
+    //     _ => hasher.hash(t)
+    //     _ => (self.hashes.offset(x) as *mut )
+    // }
     match hasher.hash(t) {
         // This constant is exceedingly likely to hash to the same
         // bucket, but it won't be counted as empty! Just so we can maintain

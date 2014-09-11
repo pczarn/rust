@@ -19,7 +19,7 @@ use fmt;
 use hash::{Hash, Hasher, RandomSipHasher};
 use iter::{Iterator, FromIterator, Extendable};
 use iter;
-use mem::replace;
+use mem::{drop, replace};
 use num;
 use ops::{Deref, DerefMut};
 use option::{Some, None, Option};
@@ -802,11 +802,13 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                                   found_existing: |&mut K, &mut V, V|)
                                   -> &'a mut V {
         // Worst case, we'll find one empty bucket among `size + 1` buckets.
-        let size = self.table.size();
+        // let size = self.table.size();
         let mut probe = Bucket::new(&mut self.table, &hash);
         let ib = probe.index();
 
-        loop {
+        let longest_seq = 16;
+
+        while probe.index() != ib + longest_seq {
             let mut bucket = match probe.peek() {
                 Empty(bucket) => {
                     // Found a hole!
@@ -839,8 +841,12 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
             }
 
             probe = bucket.next();
-            assert!(probe.index() != ib + size + 1);
         }
+
+        drop(probe);
+        // self.rehash();
+        // self.insert_or_replace_with(hash, k, found_existing);
+        unimplemented!()
     }
 
     /// Inserts an element which has already been hashed, returning a reference

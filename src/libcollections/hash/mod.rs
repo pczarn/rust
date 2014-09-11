@@ -76,6 +76,7 @@ use vec::Vec;
 pub use self::sip::hash as hash;
 
 pub mod sip;
+pub mod xxh;
 
 /// A hashable type. The `S` type parameter is an abstract hash state that is
 /// used by the `Hash` to compute the hash. It defaults to
@@ -90,6 +91,8 @@ pub trait Hash<S = sip::SipState> {
 pub trait Hasher<S> {
     /// Compute the hash of a value.
     fn hash<T: Hash<S>>(&self, value: &T) -> u64;
+
+    fn reset(&mut self) {}
 }
 
 pub trait Writer {

@@ -240,6 +240,10 @@ impl Hasher<SipState> for SipHasher {
         value.hash(&mut state);
         state.result()
     }
+
+    fn reset(&mut self) {
+        
+    }
 }
 
 impl Default for SipHasher {
