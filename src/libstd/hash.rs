@@ -106,7 +106,7 @@ impl Default for RandomSipHasher {
 
 #[deriving(Clone)]
 struct XxHashOrRandomSipHasher {
-    hasher: sip::SipHasher,
+    hasher: sip::SipState,
 }
 
 impl XxHashOrRandomSipHasher {
@@ -114,22 +114,54 @@ impl XxHashOrRandomSipHasher {
     #[inline]
     pub fn new() -> XxHashOrRandomSipHasher {
         XxHashOrRandomSipHasher {
-            hasher: sip::SipHasher::new_with_keys(0, 0),
+            hasher: sip::SipState::new_with_keys(0, 0),
         }
     }
 }
+
+enum XxStateOrRandomSipState {
+    XxSt(xxh::XxState64), 
+    SipSt(sip::SipState)
+}
+
+impl Writer for XxStateOrRandomSipState {
+    fn write(&mut self, bytes: &[u8]) {
+        match self {
+            &XxSt(ref mut h) => h.write(bytes),
+            &SipSt(ref mut h) => h.write(bytes)
+        }
+    }
+}
+
+impl XxStateOrRandomSipState {
+    fn result(&mut self) -> u64 {
+        match self {
+            &XxSt(ref mut h) => h.result(),
+            &SipSt(ref mut h) => h.result()
+        }
+    }
+}
+
+
+    // fn hash<T: Hash<XxState64>>(&self, value: &T) -> u64 {
+    //     let mut state = XxState64::new(self.seed);
+    //     value.hash(&mut state);
+    //     state.result()
+    // }
 // Hasher<SipState> + Hasher<XxState>
-impl<W: Writer> Hasher<W> for XxHashOrRandomSipHasher {
+impl Hasher<XxStateOrRandomSipState> for XxHashOrRandomSipHasher {
     #[inline]
-    fn hash<T: Hash<W>>(&self, value: &T) -> u64 {
+    fn hash<T: Hash<XxStateOrRandomSipState>>(&self, value: &T) -> u64 {
         let copy: u32 = unsafe {
             mem::transmute_copy(self)
         };
-        if copy == 0 {
-            xxh::XxHasher64::new().hash(value)
+        let mut state = if copy == 0 {
+            XxSt(xxh::XxState64::new(0))//.hash(value)
         } else {
-            self.hasher.hash(value)
-        }
+            SipSt(self.hasher)//.hash(value)
+        };
+        value.hash(&mut state);
+        state.result()
     }
 //hash.rs:129:13: 129:47 error: expected collections::hash::Hash<collections::hash::xxh::XxState64>, found collections::hash::Hash (expected struct collections::hash::xxh::XxState64, found struct collections::hash::sip::SipState) [E0095]
 //hash.rs:129             xxh::XxHasher64::new().hash(value)
@@ -139,7 +171,7 @@ impl<W: Writer> Hasher<W> for XxHashOrRandomSipHasher {
         let mut r = rand::task_rng();
         let r0 = r.gen();
         let r1 = r.gen();
-        self.hasher = sip::SipHasher::new_with_keys(r0, r1);
+        self.hasher = sip::SipState::new_with_keys(r0, r1);
     }
 }
 

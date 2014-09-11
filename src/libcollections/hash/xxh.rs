@@ -304,7 +304,7 @@ impl XxState64 {
     }
 
     #[inline]
-    fn result(&self) -> u64 {unsafe{ 
+    pub fn result(&self) -> u64 {unsafe{ 
         let mut p = &self.memory as *const _ as *const u64;
 
         let mut h64 = match self.total_len {
