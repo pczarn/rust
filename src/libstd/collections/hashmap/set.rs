@@ -16,7 +16,7 @@ use collections::{Collection, Mutable, Set, MutableSet, Map, MutableMap};
 use default::Default;
 use fmt::Show;
 use fmt;
-use hash::{Hash, Hasher, RandomSipHasher};
+use hash::{Hash, Hasher, XxStateOrRandomSipState, XxHashOrRandomSipHasher};
 use iter::{Iterator, FromIterator, FilterMap, Chain, Repeat, Zip, Extendable};
 use iter;
 use option::{Some, None};
@@ -90,11 +90,11 @@ use super::{HashMap, Entries, MoveEntries, INITIAL_CAPACITY};
 /// }
 /// ```
 #[deriving(Clone)]
-pub struct HashSet<T, H = RandomSipHasher> {
+pub struct HashSet<T, H = XxHashOrRandomSipHasher> {
     map: HashMap<T, (), H>
 }
 
-impl<T: Hash + Eq> HashSet<T, RandomSipHasher> {
+impl<T: Hash<XxStateOrRandomSipState> + Eq> HashSet<T, XxHashOrRandomSipHasher> {
     /// Create an empty HashSet.
     ///
     /// # Example
@@ -104,7 +104,7 @@ impl<T: Hash + Eq> HashSet<T, RandomSipHasher> {
     /// let mut set: HashSet<int> = HashSet::new();
     /// ```
     #[inline]
-    pub fn new() -> HashSet<T, RandomSipHasher> {
+    pub fn new() -> HashSet<T, XxHashOrRandomSipHasher> {
         HashSet::with_capacity(INITIAL_CAPACITY)
     }
 
@@ -118,7 +118,7 @@ impl<T: Hash + Eq> HashSet<T, RandomSipHasher> {
     /// let mut set: HashSet<int> = HashSet::with_capacity(10);
     /// ```
     #[inline]
-    pub fn with_capacity(capacity: uint) -> HashSet<T, RandomSipHasher> {
+    pub fn with_capacity(capacity: uint) -> HashSet<T, XxHashOrRandomSipHasher> {
         HashSet { map: HashMap::with_capacity(capacity) }
     }
 }

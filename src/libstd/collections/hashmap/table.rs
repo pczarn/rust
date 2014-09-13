@@ -13,7 +13,7 @@
 use clone::Clone;
 use cmp;
 use hash::{Hash, Hasher};
-use iter::{Iterator, count};
+use iter::{Iterator, count, range};
 use kinds::marker;
 use mem::{min_align_of, size_of};
 use mem;
@@ -711,6 +711,28 @@ impl<K, V> RawTable<K, V> {
             hashes_end: raw_bucket.hash,
             elems_left: self.size
         }
+    }
+
+    pub fn dib(&self) -> (f64, uint) {
+        let cap = self.capacity;
+        let mut sum: f64 = 0.0f64;
+        let mut max = 0;
+
+        let mut probe = Bucket::first(self);
+        // let ib = probe.index();
+
+        for _ in range(0u, cap) {
+            match probe.peek() {
+                Empty(b) => probe = b.next(),
+                Full(b) => {
+                    let dib = b.distance();
+                    max = cmp::max(max, dib);
+                    sum += dib as f64;
+                    probe = b.next();
+                }
+            }
+        }
+        (sum / self.size as f64, max)
     }
 }
 

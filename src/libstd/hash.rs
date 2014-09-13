@@ -105,7 +105,7 @@ impl Default for RandomSipHasher {
 }
 
 #[deriving(Clone)]
-struct XxHashOrRandomSipHasher {
+pub struct XxHashOrRandomSipHasher {
     hasher: sip::SipState,
 }
 
@@ -119,7 +119,7 @@ impl XxHashOrRandomSipHasher {
     }
 }
 
-enum XxStateOrRandomSipState {
+pub enum XxStateOrRandomSipState {
     XxSt(xxh::XxState64), 
     SipSt(sip::SipState)
 }
@@ -152,12 +152,14 @@ impl XxStateOrRandomSipState {
 impl Hasher<XxStateOrRandomSipState> for XxHashOrRandomSipHasher {
     #[inline]
     fn hash<T: Hash<XxStateOrRandomSipState>>(&self, value: &T) -> u64 {
-        let copy: u32 = unsafe {
+        let copyy: u32 = unsafe {
             mem::transmute_copy(self)
         };
-        let mut state = if copy == 0 {
+        let mut state = if copyy == 0 {
+            // println!("state 0");
             XxSt(xxh::XxState64::new(0))//.hash(value)
         } else {
+            // println!("copy is {}", copyy);
             SipSt(self.hasher)//.hash(value)
         };
         value.hash(&mut state);

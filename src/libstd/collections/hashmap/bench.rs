@@ -23,6 +23,7 @@ fn new_drop(b : &mut Bencher) {
     b.iter(|| {
         let m : HashMap<int, int> = HashMap::new();
         assert_eq!(m.len(), 0);
+        m
     })
 }
 

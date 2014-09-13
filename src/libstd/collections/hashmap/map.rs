@@ -16,10 +16,10 @@ use collections::{Collection, Mutable, MutableSet, Map, MutableMap};
 use default::Default;
 use fmt::Show;
 use fmt;
-use hash::{Hash, Hasher, RandomSipHasher};
+use hash::{Hash, Hasher, XxHashOrRandomSipHasher, XxStateOrRandomSipState};
 use iter::{Iterator, FromIterator, Extendable};
 use iter;
-use mem::{drop, replace};
+use mem::replace;
 use num;
 use ops::{Deref, DerefMut};
 use option::{Some, None, Option};
@@ -273,7 +273,7 @@ impl DefaultResizePolicy {
 /// }
 /// ```
 #[deriving(Clone)]
-pub struct HashMap<K, V, H = RandomSipHasher> {
+pub struct HashMap<K, V, H = XxHashOrRandomSipHasher> {
     // All hashes are keyed on these values, to prevent hash collision attacks.
     hasher: H,
 
@@ -572,7 +572,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
     }
 }
 
-impl<K: Hash + Eq, V> HashMap<K, V, RandomSipHasher> {
+impl<K: Hash<XxStateOrRandomSipState> + Eq, V> HashMap<K, V, XxHashOrRandomSipHasher> {
     /// Create an empty HashMap.
     ///
     /// # Example
@@ -582,8 +582,8 @@ impl<K: Hash + Eq, V> HashMap<K, V, RandomSipHasher> {
     /// let mut map: HashMap<&str, int> = HashMap::with_capacity(10);
     /// ```
     #[inline]
-    pub fn new() -> HashMap<K, V, RandomSipHasher> {
-        let hasher = RandomSipHasher::new();
+    pub fn new() -> HashMap<K, V, XxHashOrRandomSipHasher> {
+        let hasher = XxHashOrRandomSipHasher::new();
         HashMap::with_hasher(hasher)
     }
 
@@ -596,13 +596,15 @@ impl<K: Hash + Eq, V> HashMap<K, V, RandomSipHasher> {
     /// let mut map: HashMap<&str, int> = HashMap::with_capacity(10);
     /// ```
     #[inline]
-    pub fn with_capacity(capacity: uint) -> HashMap<K, V, RandomSipHasher> {
-        let hasher = RandomSipHasher::new();
+    pub fn with_capacity(capacity: uint) -> HashMap<K, V, XxHashOrRandomSipHasher> {
+        let hasher = XxHashOrRandomSipHasher::new();
         HashMap::with_capacity_and_hasher(capacity, hasher)
     }
 }
 
 impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
+    pub fn dib(&self) -> (f64, uint) { self.table.dib() }
+
     /// Creates an empty hashmap which will use the given hasher to hash keys.
     ///
     /// The creates map has the default initial capacity.
@@ -802,13 +804,16 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                                   found_existing: |&mut K, &mut V, V|)
                                   -> &'a mut V {
         // Worst case, we'll find one empty bucket among `size + 1` buckets.
-        // let size = self.table.size();
+        // use mem::drop;
+        // use cmp;
+        let size = self.table.size();
         let mut probe = Bucket::new(&mut self.table, &hash);
         let ib = probe.index();
 
-        let longest_seq = 16;
+        // let longest_seq = cmp::min(64, size + 1);
+        let mut h1 = 0;
 
-        while probe.index() != ib + longest_seq {
+        while probe.index() != ib + size + 1 {
             let mut bucket = match probe.peek() {
                 Empty(bucket) => {
                     // Found a hole!
@@ -818,6 +823,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                 },
                 Full(bucket) => bucket
             };
+            h1 = bucket.hash().inspect();
 
             if bucket.hash() == hash {
                 let found_match = {
@@ -842,8 +848,13 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
 
             probe = bucket.next();
         }
-
-        drop(probe);
+        let idx = probe.index();
+        let h2 = match probe.peek() {
+            Empty(_) => None,
+            Full(b) => Some(b.hash().inspect())
+        };
+        println!("h1 {} h2 {} hash is {} at {} of {}", h1, h2, hash.inspect(), idx, size);
+        // drop(probe);
         // self.rehash();
         // self.insert_or_replace_with(hash, k, found_existing);
         unimplemented!()
@@ -1424,6 +1435,7 @@ mod test_map {
     use super::HashMap;
     use cmp::Equiv;
     use hash;
+    use hash::{Hash, Hasher};
     use iter::{Iterator,range_inclusive,range_step_inclusive};
     use cell::RefCell;
 
@@ -2031,5 +2043,209 @@ mod test_map {
         map.insert(3, 4);
 
         map[4];
+    }
+
+    fn test_collisions<T: Eq + Hash<S>, S, H: Hasher<S>>(m: &mut HashMap<T, int, H>, f: |int| -> T) {
+        for _ in range_inclusive(1u, 50) {
+            for i in range_inclusive(0i, 900) {
+                m.insert(f(i), i);
+            }
+
+            println!("{}", m.dib());
+            assert_eq!(m.table.capacity(), 1024)
+            m.clear();
+        }
+    }
+
+    #[test]
+    fn test_collisionssip() {
+        use rand;
+        use rand::Rng;
+        use hash::RandomSipHasher;
+        let mut m: HashMap<int, int, RandomSipHasher> = HashMap::with_hasher(RandomSipHasher::new());
+        let mut r = rand::task_rng();
+        let start: int = r.gen();
+        test_collisions(&mut m, |i| start + i);
+    }
+
+    #[test]
+    fn test_collisionssip_rng() {
+        use rand;
+        use rand::Rng;
+        use hash::RandomSipHasher;
+        let mut m: HashMap<_, int, RandomSipHasher> = HashMap::with_hasher(RandomSipHasher::new());
+        let mut r = rand::task_rng();
+        test_collisions(&mut m, |_| { let x: u64 = r.gen(); x });
+    }
+
+    #[test]
+    fn test_collisionsxxh_rng() {
+        use rand;
+        use rand::Rng;
+        let mut m: HashMap<_, int> = HashMap::new();
+        let mut r = rand::task_rng();
+        test_collisions(&mut m, |_| { let x: u64 = r.gen(); x });
+    }
+
+    #[test]
+    fn test_collisionsxxh_max() {
+        use rand;
+        use rand::Rng;
+        use cmp;
+        let mut m = HashMap::new();
+        let mut r = rand::task_rng();
+
+        let mut max = 0;
+        let mut sum = 0.0f64;
+        for _ in range_inclusive(1u, 1_00_000) {
+            for i in range_inclusive(0u, 900) {
+                let x: u64 = r.gen();
+                m.insert(x + (i as u64) * 65521, i);
+            }
+
+            let (s, ml) = m.dib();
+            sum += s;
+            max = cmp::max(max, ml);
+
+            // assert_eq!(m.table.capacity(), 1024)
+            m.clear();
+        }
+        println!("{} {}", sum, max);
+    }
+
+    #[test]
+    fn test_collisionsxxh_real() {
+        use rand;
+        use rand::Rng;
+        use cmp;
+        let mut m = HashMap::new();
+        let mut r = rand::task_rng();
+
+        let mut max = 0;
+        let mut sum = 0.0f64;
+        for _ in range_inclusive(1u, 1_000_000) {
+            for i in range_inclusive(0u, 3200) {
+                let x: u64 = r.gen();
+                m.insert(x + (i as u64) * 65521, i);
+            }
+
+            let (s, ml) = m.dib();
+            sum += s;
+            max = cmp::max(max, ml);
+
+            // assert_eq!(m.table.capacity(), 1024)
+            m.clear();
+        }
+        println!("{} {}", sum, max);
+    }
+
+    #[test]
+    fn test_collisionsxxh_realfactor() {
+        use rand;
+        use rand::Rng;
+        use cmp;
+        let mut m = HashMap::new();
+        let mut r = rand::task_rng();
+
+        let mut max = 0;
+        let mut sum = 0.0f64;
+        for _ in range_inclusive(1u, 10_000) {
+            for i in range_inclusive(0u, 1024) {
+                let x: u64 = r.gen();
+                m.insert(x + (i as u64) * 65521, i);
+            }
+
+            let (s, ml) = m.dib();
+            sum += s;
+            max = cmp::max(max, ml);
+
+            // assert_eq!(m.table.capacity(), 1024)
+            m.clear();
+        }
+        println!("{} {}", sum, max);
+    }
+
+    #[test]
+    fn test_collisionsxxh_realfactor_large() {
+        use rand;
+        // use rand::Rand;
+        use rand::Rng;
+        // use rand::SeedableRng;
+        // use rand::XorShiftRng;
+        use cmp;
+        let mut m = HashMap::new();
+        // let mut r = rand::task_rng();
+        let mut r = rand::weak_rng();
+
+        let mut max = 0;
+        let mut sum = 0.0f64;
+        for _ in range_inclusive(1u, 10_000_000) {
+            for i in range_inclusive(0u, 1024) {
+                let x: u64 = r.gen();
+                m.insert(x, ());
+            }
+
+            let (s, ml) = m.dib();
+            sum += s;
+            max = cmp::max(max, ml);
+
+            // assert_eq!(m.table.capacity(), 1024)
+            m.clear();
+        }
+        println!("{} {}", sum, max);
+    }
+
+    #[test]
+    fn test_collisionssip_realfactor() {
+        use rand;
+        use rand::Rng;
+        use cmp;
+        use hash::RandomSipHasher;
+        let mut m: HashMap<_, uint, RandomSipHasher> = HashMap::with_hasher(RandomSipHasher::new());
+        let mut r = rand::task_rng();
+
+        let mut max = 0;
+        let mut sum = 0.0f64;
+        for _ in range_inclusive(1u, 10_000) {
+            for i in range_inclusive(0u, 3200) {
+                let x: u64 = r.gen();
+                m.insert(x + (i as u64) * 65521, i);
+            }
+
+            let (s, ml) = m.dib();
+            sum += s;
+            max = cmp::max(max, ml);
+
+            // assert_eq!(m.table.capacity(), 1024)
+            m.clear();
+        }
+        println!("{} {}", sum, max);
+    }
+
+    #[test]
+    fn test_collisionsxxh_rng2() {
+        use rand;
+        use rand::Rng;
+        let mut m: HashMap<_, int> = HashMap::new();
+        let mut r = rand::task_rng();
+        test_collisions(&mut m, |_| { let x: (u64, u64) = r.gen(); x });
+    }
+
+    #[test]
+    fn test_collisionsxxh() {
+        use rand;
+        use rand::Rng;
+        // use hash::RandomSipHasher;
+        // let mut m: HashMap<int, int, RandomSipHasher> = HashMap::with_hasher(RandomSipHasher::new());
+        let mut m: HashMap<int, int> = HashMap::new();
+        let mut r = rand::task_rng();
+        let start: int = r.gen();
+        test_collisions(&mut m, |i| start + i);
+        // let mut k = 1001;
+
+        // b.iter(|| {
+        //     m.insert(k, k);
+        //     k += 1;
+        // });
     }
 }

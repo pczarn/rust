@@ -98,7 +98,7 @@ impl XxState32 {
     #[inline]
     pub fn new(seed: u32) -> XxState32 {
         // no need to write it twice
-        let mut xxh: XxState32 = unsafe { mem::uninit() };
+        let mut xxh: XxState32 = unsafe { mem::uninitialized() };
         xxh.reset(seed);
         xxh
     }
@@ -115,7 +115,7 @@ impl XxState32 {
     }
 
     #[inline]
-    fn result(&self) -> u32 {unsafe{
+    fn result(&self) -> u32 {
         let mut p = 0;
 
         let mut h32: u32 = match self.total_len >= 16 {
@@ -146,7 +146,7 @@ impl XxState32 {
         h32 ^= h32 >> 16;
 
         h32
-    }}
+    }
 }
 
 impl Writer for XxState32 {
@@ -287,7 +287,7 @@ impl XxState64 {
     #[inline]
     pub fn new(seed: u64) -> XxState64 {
         // no need to write it twice
-        let mut xxh: XxState64 = unsafe { mem::uninit() };
+        let mut xxh: XxState64 = unsafe { mem::uninitialized() };
         xxh.reset(seed);
         xxh
     }
