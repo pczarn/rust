@@ -16,7 +16,7 @@ use collections::{Collection, Mutable, MutableSet, Map, MutableMap};
 use default::Default;
 use fmt::Show;
 use fmt;
-use hash::{Hash, Hasher, XxHashOrRandomSipHasher, XxStateOrRandomSipState};
+use hash::{Hash, Hasher, SafeHasher, SafeHashState};
 use iter::{Iterator, FromIterator, Extendable};
 use iter;
 use mem::replace;
@@ -273,7 +273,7 @@ impl DefaultResizePolicy {
 /// }
 /// ```
 #[deriving(Clone)]
-pub struct HashMap<K, V, H = XxHashOrRandomSipHasher> {
+pub struct HashMap<K, V, H = SafeHasher> {
     // All hashes are keyed on these values, to prevent hash collision attacks.
     hasher: H,
 
@@ -351,7 +351,7 @@ fn pop_internal<K, V>(starting_bucket: FullBucketMut<K, V>) -> V {
 /// to recalculate it.
 ///
 /// `hash`, `k`, and `v` are the elements to "robin hood" into the hashtable.
-fn robin_hood<'a, K: 'a, V: 'a>(mut bucket: FullBucketMut<'a, K, V>,
+fn robin_hood<'a, K: 'a, V: 'a, M: DerefMut<RawTable<K, V>> + 'a>(mut bucket: FullBucket<K, V, M>,
                         mut ib: uint,
                         mut hash: SafeHash,
                         mut k: K,
@@ -572,7 +572,18 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> MutableMap<K, V> for HashMap<K, V, H> 
     }
 }
 
-impl<K: Hash<XxStateOrRandomSipState> + Eq, V> HashMap<K, V, XxHashOrRandomSipHasher> {
+#[cfg(not(stage0))] #[inline]
+fn safe_hasher() -> SafeHasher {
+    use hash::XxHashOrRandomSipHasher;
+    XxHashOrRandomSipHasher::new()
+}
+#[cfg(stage0)] 
+fn safe_hasher() -> SafeHasher {
+    use hash::RandomSipHasher;
+    RandomSipHasher::new()
+}
+
+impl<K: Hash<SafeHashState> + Eq, V> HashMap<K, V, SafeHasher> {
     /// Create an empty HashMap.
     ///
     /// # Example
@@ -582,8 +593,8 @@ impl<K: Hash<XxStateOrRandomSipState> + Eq, V> HashMap<K, V, XxHashOrRandomSipHa
     /// let mut map: HashMap<&str, int> = HashMap::with_capacity(10);
     /// ```
     #[inline]
-    pub fn new() -> HashMap<K, V, XxHashOrRandomSipHasher> {
-        let hasher = XxHashOrRandomSipHasher::new();
+    pub fn new() -> HashMap<K, V, SafeHasher> {
+        let hasher = safe_hasher();
         HashMap::with_hasher(hasher)
     }
 
@@ -596,13 +607,14 @@ impl<K: Hash<XxStateOrRandomSipState> + Eq, V> HashMap<K, V, XxHashOrRandomSipHa
     /// let mut map: HashMap<&str, int> = HashMap::with_capacity(10);
     /// ```
     #[inline]
-    pub fn with_capacity(capacity: uint) -> HashMap<K, V, XxHashOrRandomSipHasher> {
-        let hasher = XxHashOrRandomSipHasher::new();
+    pub fn with_capacity(capacity: uint) -> HashMap<K, V, SafeHasher> {
+        let hasher = safe_hasher();
         HashMap::with_capacity_and_hasher(capacity, hasher)
     }
 }
 
 impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
+    /// for test
     pub fn dib(&self) -> (f64, uint) { self.table.dib() }
 
     /// Creates an empty hashmap which will use the given hasher to hash keys.
@@ -807,13 +819,15 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         // use mem::drop;
         // use cmp;
         let size = self.table.size();
-        let mut probe = Bucket::new(&mut self.table, &hash);
+        let mut probe = Bucket::new(MapMutRef { map_ref: self }, &hash);
         let ib = probe.index();
+        // let mut lim = ib + 92;
+        let lim = ib + 92;
 
         // let longest_seq = cmp::min(64, size + 1);
-        let mut h1 = 0;
+        // let mut h1 = 0;
 
-        while probe.index() != ib + size + 1 {
+        while probe.index() < lim {
             let mut bucket = match probe.peek() {
                 Empty(bucket) => {
                     // Found a hole!
@@ -823,7 +837,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                 },
                 Full(bucket) => bucket
             };
-            h1 = bucket.hash().inspect();
+            // h1 = bucket.hash().inspect();
 
             if bucket.hash() == hash {
                 let found_match = {
@@ -836,7 +850,9 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
                     // Key already exists. Get its reference.
                     found_existing(bucket_k, bucket_v, v);
                     return bucket_v;
-                }
+                }// else {
+                //    lim -= 16;
+                //}
             }
 
             let robin_ib = bucket.index() as int - bucket.distance() as int;
@@ -848,16 +864,51 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
 
             probe = bucket.next();
         }
-        let idx = probe.index();
-        let h2 = match probe.peek() {
-            Empty(_) => None,
-            Full(b) => Some(b.hash().inspect())
-        };
-        println!("h1 {} h2 {} hash is {} at {} of {}", h1, h2, hash.inspect(), idx, size);
-        // drop(probe);
+        // let idx = probe.index();
+        // let h2 = match probe.peek() {
+        //     Empty(_) => None,
+        //     Full(b) => Some(b.hash().inspect())
+        // };
+        // println!("lim={} h1 {} h2 {} hash is {} at {} of {}", lim, h1, h2, hash.inspect(), idx, size);
+        let MapMutRef { map_ref: this } = probe.into_table();
         // self.rehash();
         // self.insert_or_replace_with(hash, k, found_existing);
-        unimplemented!()
+        // unimplemented!()
+        // optimize this part for size
+        let cap = this.table.capacity();
+        // let new_cap = if size / (this.table.capacity() >> 3) >= 5 {
+
+        //     let old_table = replace(&mut this.table, RawTable::new(cap << 1));
+        //     // let old_size = old_table.size();
+    
+        //     for (h, k, v) in old_table.into_iter() {
+        //         this.insert_hashed_nocheck(h, k, v);
+        //     }
+        // } else {
+        //     this.hasher.reset();
+        //     let old_table = replace(&mut this.table, RawTable::new(cap));
+        //     // let old_size = old_table.size();
+
+        //     for (_, k, v) in old_table.into_iter() {
+        //         this.swap(k, v);
+        //     }
+        // }
+
+        if size / (cap >> 3) >= 5 {
+            // Load is at least 0.625.
+            this.resize(cap << 1);
+        } else {
+            // This is enormously unlikely. Most likely the table layout has
+            // been deliberately crafted. Switch to one-way universal hashing.
+            this.hasher.reset();
+            let old_table = replace(&mut this.table, RawTable::new(cap));
+
+            for (_, k, v) in old_table.into_iter() {
+                this.swap(k, v);
+            }
+        }
+
+        this.insert_or_replace_with(hash, k, v, found_existing)
     }
 
     /// Inserts an element which has already been hashed, returning a reference

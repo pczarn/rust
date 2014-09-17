@@ -40,7 +40,7 @@
 use cmp::{PartialEq, Eq};
 use collections::{HashMap, Collection, Mutable, MutableMap};
 use fmt;
-use hash::{Hash, XxStateOrRandomSipState};
+use hash::{Hash, SafeHashState};
 use iter::{range, Iterator};
 use mem;
 use ops::Drop;
@@ -90,7 +90,7 @@ impl<K, V> LruEntry<K, V> {
     }
 }
 
-impl<K: Hash<XxStateOrRandomSipState> + Eq, V> LruCache<K, V> {
+impl<K: Hash<SafeHashState> + Eq, V> LruCache<K, V> {
     /// Create an LRU Cache that holds at most `capacity` items.
     ///
     /// # Example
@@ -290,7 +290,7 @@ impl<K: Hash<XxStateOrRandomSipState> + Eq, V> LruCache<K, V> {
     }
 }
 
-impl<A: fmt::Show + Hash<XxStateOrRandomSipState> + Eq, B: fmt::Show> fmt::Show for LruCache<A, B> {
+impl<A: fmt::Show + Hash<SafeHashState> + Eq, B: fmt::Show> fmt::Show for LruCache<A, B> {
     /// Return a string that lists the key-value pairs from most-recently
     /// used to least-recently used.
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -311,14 +311,14 @@ impl<A: fmt::Show + Hash<XxStateOrRandomSipState> + Eq, B: fmt::Show> fmt::Show 
     }
 }
 
-impl<K: Hash<XxStateOrRandomSipState> + Eq, V> Collection for LruCache<K, V> {
+impl<K: Hash<SafeHashState> + Eq, V> Collection for LruCache<K, V> {
     /// Return the number of key-value pairs in the cache.
     fn len(&self) -> uint {
         self.map.len()
     }
 }
 
-impl<K: Hash<XxStateOrRandomSipState> + Eq, V> Mutable for LruCache<K, V> {
+impl<K: Hash<SafeHashState> + Eq, V> Mutable for LruCache<K, V> {
     /// Clear the cache of all key-value pairs.
     fn clear(&mut self) {
         self.map.clear();

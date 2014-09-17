@@ -63,12 +63,18 @@
 
 #![experimental]
 
-pub use core_collections::hash::{Hash, Hasher, Writer, hash, sip, xxh};
+pub use core_collections::hash::{Hash, Hasher, Writer, SafeHashState, XxStateOrRandomSipState, SipSt, XxSt, hash, sip, xxh};
 
 use default::Default;
 use mem;
 use rand::Rng;
 use rand;
+
+
+#[cfg(not(stage0))]
+pub type SafeHasher = XxHashOrRandomSipHasher;
+#[cfg(stage0)] 
+pub type SafeHasher = RandomSipHasher;
 
 /// `RandomSipHasher` computes the SipHash algorithm from a stream of bytes
 /// initialized with random keys.
@@ -95,6 +101,13 @@ impl Hasher<sip::SipState> for RandomSipHasher {
     fn hash<T: Hash<sip::SipState>>(&self, value: &T) -> u64 {
         self.hasher.hash(value)
     }
+
+    fn reset(&mut self) {
+        let mut r = rand::task_rng();
+        let r0 = r.gen();
+        let r1 = r.gen();
+        self.hasher = sip::SipHasher::new_with_keys(r0, r1);
+    }
 }
 
 impl Default for RandomSipHasher {
@@ -104,6 +117,7 @@ impl Default for RandomSipHasher {
     }
 }
 
+/// Adaptive hasher
 #[deriving(Clone)]
 pub struct XxHashOrRandomSipHasher {
     hasher: sip::SipState,
@@ -115,29 +129,6 @@ impl XxHashOrRandomSipHasher {
     pub fn new() -> XxHashOrRandomSipHasher {
         XxHashOrRandomSipHasher {
             hasher: sip::SipState::new_with_keys(0, 0),
-        }
-    }
-}
-
-pub enum XxStateOrRandomSipState {
-    XxSt(xxh::XxState64), 
-    SipSt(sip::SipState)
-}
-
-impl Writer for XxStateOrRandomSipState {
-    fn write(&mut self, bytes: &[u8]) {
-        match self {
-            &XxSt(ref mut h) => h.write(bytes),
-            &SipSt(ref mut h) => h.write(bytes)
-        }
-    }
-}
-
-impl XxStateOrRandomSipState {
-    fn result(&mut self) -> u64 {
-        match self {
-            &XxSt(ref mut h) => h.result(),
-            &SipSt(ref mut h) => h.result()
         }
     }
 }
@@ -171,7 +162,8 @@ impl Hasher<XxStateOrRandomSipState> for XxHashOrRandomSipHasher {
 
     fn reset(&mut self) {
         let mut r = rand::task_rng();
-        let r0 = r.gen();
+        let mut r0: u64 = r.gen();
+        while r0 == 0u64 { r0 = r.gen(); }
         let r1 = r.gen();
         self.hasher = sip::SipState::new_with_keys(r0, r1);
     }

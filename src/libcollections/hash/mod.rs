@@ -78,10 +78,41 @@ pub use self::sip::hash as hash;
 pub mod sip;
 pub mod xxh;
 
+/// Adaptive state for hashing
+pub enum XxStateOrRandomSipState {
+    /// initial behavior
+    XxSt(xxh::XxState64),
+    /// secure, randomized behavior 
+    SipSt(sip::SipState)
+}
+
+impl Writer for XxStateOrRandomSipState {
+    fn write(&mut self, bytes: &[u8]) {
+        match self {
+            &XxSt(ref mut h) => h.write(bytes),
+            &SipSt(ref mut h) => h.write(bytes)
+        }
+    }
+}
+
+impl XxStateOrRandomSipState {
+    pub fn result(&mut self) -> u64 {
+        match self {
+            &XxSt(ref mut h) => h.result(),
+            &SipSt(ref mut h) => h.result()
+        }
+    }
+}
+
+#[cfg(not(stage0))]
+pub type SafeHashState = XxStateOrRandomSipState;
+#[cfg(stage0)] 
+pub type SafeHashState = sip::SipState;
+
 /// A hashable type. The `S` type parameter is an abstract hash state that is
 /// used by the `Hash` to compute the hash. It defaults to
 /// `std::hash::sip::SipState`.
-pub trait Hash<S = sip::SipState> {
+pub trait Hash<S = SafeHashState> {
     /// Computes the hash of a value.
     fn hash(&self, state: &mut S);
 }
