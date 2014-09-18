@@ -822,12 +822,12 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         let mut probe = Bucket::new(MapMutRef { map_ref: self }, &hash);
         let ib = probe.index();
         // let mut lim = ib + 92;
-        let lim = ib + 92;
+        // let lim = ib + 92;
 
         // let longest_seq = cmp::min(64, size + 1);
         // let mut h1 = 0;
 
-        while probe.index() < lim {
+        while probe.index() < ib + 92 {
             let mut bucket = match probe.peek() {
                 Empty(bucket) => {
                     // Found a hole!
@@ -864,42 +864,18 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
 
             probe = bucket.next();
         }
-        // let idx = probe.index();
-        // let h2 = match probe.peek() {
-        //     Empty(_) => None,
-        //     Full(b) => Some(b.hash().inspect())
-        // };
-        // println!("lim={} h1 {} h2 {} hash is {} at {} of {}", lim, h1, h2, hash.inspect(), idx, size);
+
+        // optimize the code below for size
         let MapMutRef { map_ref: this } = probe.into_table();
-        // self.rehash();
-        // self.insert_or_replace_with(hash, k, found_existing);
-        // unimplemented!()
-        // optimize this part for size
         let cap = this.table.capacity();
-        // let new_cap = if size / (this.table.capacity() >> 3) >= 5 {
-
-        //     let old_table = replace(&mut this.table, RawTable::new(cap << 1));
-        //     // let old_size = old_table.size();
-    
-        //     for (h, k, v) in old_table.into_iter() {
-        //         this.insert_hashed_nocheck(h, k, v);
-        //     }
-        // } else {
-        //     this.hasher.reset();
-        //     let old_table = replace(&mut this.table, RawTable::new(cap));
-        //     // let old_size = old_table.size();
-
-        //     for (_, k, v) in old_table.into_iter() {
-        //         this.swap(k, v);
-        //     }
-        // }
 
         if size / (cap >> 3) >= 5 {
-            // Load is at least 0.625.
+            // Load is at least 0.625. With this many occupied buckets,
+            // this situation is very rare.
             this.resize(cap << 1);
         } else {
-            // This is enormously unlikely. Most likely the table layout has
-            // been deliberately crafted. Switch to one-way universal hashing.
+            // This is enormously unlikely. Allegedly the table layout has
+            // been deliberately crafted. Switch to one-way randomized hashing.
             this.hasher.reset();
             let old_table = replace(&mut this.table, RawTable::new(cap));
 
@@ -908,6 +884,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
             }
         }
 
+        // Retry insertion.
         this.insert_or_replace_with(hash, k, v, found_existing)
     }
 
