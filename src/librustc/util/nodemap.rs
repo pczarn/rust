@@ -16,8 +16,8 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hasher, Hash, Writer};
 use syntax::ast;
 
-pub type FnvHashMap<K, V> = HashMap<K, V, FnvHasher>;
-pub type FnvHashSet<V> = HashSet<V, FnvHasher>;
+pub type FnvHashMap<K, V> = HashMap<K, V>;
+pub type FnvHashSet<V> = HashSet<V>;
 
 pub type NodeMap<T> = FnvHashMap<ast::NodeId, T>;
 pub type DefIdMap<T> = FnvHashMap<ast::DefId, T>;
@@ -29,15 +29,15 @@ pub type DefIdSet = FnvHashSet<ast::DefId>;
 pub mod FnvHashMap {
     use std::hash::Hash;
     use std::collections::HashMap;
-    pub fn new<K: Hash<super::FnvState> + Eq, V>() -> super::FnvHashMap<K, V> {
-        HashMap::with_hasher(super::FnvHasher)
+    pub fn new<K: Hash + Eq, V>() -> super::FnvHashMap<K, V> {
+        HashMap::new()
     }
 }
 pub mod FnvHashSet {
     use std::hash::Hash;
     use std::collections::HashSet;
-    pub fn new<V: Hash<super::FnvState> + Eq>() -> super::FnvHashSet<V> {
-        HashSet::with_hasher(super::FnvHasher)
+    pub fn new<V: Hash + Eq>() -> super::FnvHashSet<V> {
+        HashSet::new()
     }
 }
 pub mod NodeMap {
@@ -58,37 +58,5 @@ pub mod NodeSet {
 pub mod DefIdSet {
     pub fn new() -> super::DefIdSet {
         super::FnvHashSet::new()
-    }
-}
-
-/// A speedy hash algorithm for node ids and def ids. The hashmap in
-/// libcollections by default uses SipHash which isn't quite as speedy as we
-/// want. In the compiler we're not really worried about DOS attempts, so we
-/// just default to a non-cryptographic hash.
-///
-/// This uses FNV hashing, as described here:
-/// http://en.wikipedia.org/wiki/Fowler%E2%80%93Noll%E2%80%93Vo_hash_function
-#[deriving(Clone)]
-pub struct FnvHasher;
-
-pub struct FnvState(u64);
-
-impl Hasher<FnvState> for FnvHasher {
-    fn hash<T: Hash<FnvState>>(&self, t: &T) -> u64 {
-        let mut state = FnvState(0xcbf29ce484222325);
-        t.hash(&mut state);
-        let FnvState(ret) = state;
-        return ret;
-    }
-}
-
-impl Writer for FnvState {
-    fn write(&mut self, bytes: &[u8]) {
-        let FnvState(mut hash) = *self;
-        for byte in bytes.iter() {
-            hash = hash ^ (*byte as u64);
-            hash = hash * 0x100000001b3;
-        }
-        *self = FnvState(hash);
     }
 }
