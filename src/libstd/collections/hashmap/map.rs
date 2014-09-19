@@ -898,6 +898,51 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         }
     }
 
+    /// monitoring
+    pub fn insert_get_dib(&mut self, k: K, v: V) -> Option<uint> {
+        let hash = self.make_hash(&k);
+        let potential_new_size = self.table.size() + 1;
+        self.make_some_room(potential_new_size);
+
+        // let size = self.table.size();
+        let mut probe = Bucket::new(MapMutRef { map_ref: self }, &hash);
+        let ib = probe.index();
+
+        loop {
+            let mut bucket = match probe.peek() {
+                Empty(bucket) => {
+                    // Found a hole!
+                    let bucket = bucket.put(hash, k, v);
+                    return Some(bucket.index() - ib);
+                },
+                Full(bucket) => bucket
+            };
+
+            if bucket.hash() == hash {
+                let found_match = {
+                    let (bucket_k, _) = bucket.read_mut();
+                    k == *bucket_k
+                };
+                if found_match {
+                    let (bucket_k, bucket_v) = bucket.into_mut_refs();
+                    debug_assert!(k == *bucket_k);
+                    // Key already exists. Get its reference.
+                    replace(bucket_v, v);
+                    return None;
+                }
+            }
+
+            let robin_ib = bucket.index() as int - bucket.distance() as int;
+
+            if (ib as int) < robin_ib {
+                let dib = bucket.index() - ib;
+                // Found a luckier bucket than me. Better steal his spot.
+                robin_hood(bucket, robin_ib as uint, hash, k, v);
+                return Some(dib);
+            }
+
+            probe = bucket.next();
+        }
     }
 
     /// Inserts an element which has already been hashed, returning a reference
@@ -2206,33 +2251,72 @@ mod test_map {
     }
 
     #[test]
-    fn test_collisionsxxh_realfactor_large() {
+    fn test_collisionsxxh_monitoring_9_10() {
+        use collections::SmallIntMap;
         use rand;
-        // use rand::Rand;
         use rand::Rng;
-        // use rand::SeedableRng;
-        // use rand::XorShiftRng;
-        use cmp;
+        // use cmp;
         let mut m = HashMap::new();
-        // let mut r = rand::task_rng();
         let mut r = rand::weak_rng();
 
-        let mut max = 0;
-        let mut sum = 0.0f64;
-        for _ in range_inclusive(1u, 10_000_000) {
-            for i in range_inclusive(0u, 1024) {
-                let x: u64 = r.gen();
-                m.insert(x, ());
+        let mut dibs = Vec::from_fn(900, |_| SmallIntMap::new());
+        for _ in range_inclusive(1u, 100_000_000) {
+            // for i in range_inclusive(0u, 640) {
+            for multiset in dibs.mut_iter() {
+                loop {
+                    let x: u64 = r.gen();
+                    match m.insert_get_dib(x, ()) {
+                        Some(dib) => {
+                            multiset.update(dib, 1u, |n, _| n + 1);
+                            break
+                        }
+                        None => {}
+                    }
+                }
             }
 
-            let (s, ml) = m.dib();
-            sum += s;
-            max = cmp::max(max, ml);
+            // let (s, ml) = m.dib();
+            // assert_eq!(ml, dibs.iter().map(|n|*n).max().unwrap());
 
-            // assert_eq!(m.table.capacity(), 1024)
+            // dibs.clear();
             m.clear();
         }
-        println!("{} {}", sum, max);
+        println!("{}", dibs);
+    }
+
+    #[test]
+    fn test_collisionsxxh_monitoring_6_18() {
+        use collections::SmallIntMap;
+        use rand;
+        use rand::Rng;
+        // use cmp;
+        let mut m = HashMap::new();
+        let mut r = rand::weak_rng();
+
+        let mut dibs = Vec::from_fn(117964/500, |_| SmallIntMap::new());
+        for _ in range_inclusive(1u, 10_000) {
+            while m.len() < 52429 {
+                let x: u64 = r.gen();
+                m.insert_get_dib(x, ());
+            }
+            for multiset in dibs.mut_iter() {
+                for _ in range(0u, 500) {
+                    loop {
+                        let x: u64 = r.gen();
+                        match m.insert_get_dib(x, ()) {
+                            Some(dib) => {
+                                multiset.update(dib, 1u, |n, _| n + 1);
+                                break
+                            }
+                            None => {}
+                        }
+                    }
+                }
+            }
+
+            m.clear();
+        }
+        println!("{}", dibs);
     }
 
     #[test]
