@@ -73,7 +73,15 @@ use core::mem;
 use vec::Vec;
 
 /// Reexport the `sip::hash` function as our default hasher.
+#[cfg(stage0)]
 pub use self::sip::hash as hash;
+
+#[cfg(not(stage0))] #[inline]
+pub fn hash<T: Hash<XxStateOrRandomSipState>>(value: &T) -> u64 {
+    let mut state = XxStateOrRandomSipState::new();
+    value.hash(&mut state);
+    state.result()
+}
 
 pub mod sip;
 pub mod xxh;
@@ -96,6 +104,10 @@ impl Writer for XxStateOrRandomSipState {
 }
 
 impl XxStateOrRandomSipState {
+    pub fn new() -> XxStateOrRandomSipState {
+        XxSt(xxh::XxState64::new(0))
+    }
+
     pub fn result(&mut self) -> u64 {
         match self {
             &XxSt(ref mut h) => h.result(),
@@ -106,7 +118,7 @@ impl XxStateOrRandomSipState {
 
 #[cfg(not(stage0))]
 pub type SafeHashState = XxStateOrRandomSipState;
-#[cfg(stage0)] 
+#[cfg(stage0)]
 pub type SafeHashState = sip::SipState;
 
 /// A hashable type. The `S` type parameter is an abstract hash state that is
@@ -123,7 +135,8 @@ pub trait Hasher<S> {
     /// Compute the hash of a value.
     fn hash<T: Hash<S>>(&self, value: &T) -> u64;
 
-    fn reset(&mut self) {}
+    /// The seed is rerandomized from a task-local rng, if applicable.
+    fn reseed(&mut self) {}
 }
 
 pub trait Writer {

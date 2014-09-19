@@ -241,9 +241,8 @@ impl Hasher<SipState> for SipHasher {
         state.result()
     }
 
-    fn reset(&mut self) {
-        
-    }
+    // fn reseed(&mut self) {
+    // }
 }
 
 impl Default for SipHasher {

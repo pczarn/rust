@@ -48,7 +48,9 @@
 
 use std::fmt;
 use std::hash::Hash;
-use std::hash::sip::SipState;
+use std::hash::SafeHashState;
+use std::hash::SafeHasher;
+use std::hash::Hasher;
 use std::iter::range_step;
 use syntax::ast;
 use syntax::visit;
@@ -56,6 +58,19 @@ use syntax::visit;
 #[deriving(Clone, PartialEq)]
 pub struct Svh {
     hash: String,
+}
+
+#[cfg(not(stage0))] #[inline]
+fn safe_hasher() -> SafeHasher {
+    use std::hash::XxHashOrRandomSipHasher;
+    let mut hasher = XxHashOrRandomSipHasher::new();
+    hasher.reseed();
+    hasher
+}
+#[cfg(stage0)]
+fn safe_hasher() -> SafeHasher {
+    use std::hash::RandomSipHasher;
+    RandomSipHasher::new()
 }
 
 impl Svh {
@@ -78,31 +93,12 @@ impl Svh {
 
         // FIXME: this should use SHA1, not SipHash. SipHash is not built to
         //        avoid collisions.
-        let mut state = SipState::new();
+        let info = CrateInfo {
+            metadata: metadata,
+            krate: krate
+        };
+        let hash = safe_hasher().hash(&info);
 
-        for data in metadata.iter() {
-            data.hash(&mut state);
-        }
-
-        {
-            let mut visit = svh_visitor::make(&mut state);
-            visit::walk_crate(&mut visit, krate);
-        }
-
-        // FIXME (#14132): This hash is still sensitive to e.g. the
-        // spans of the crate Attributes and their underlying
-        // MetaItems; we should make ContentHashable impl for those
-        // types and then use hash_content.  But, since all crate
-        // attributes should appear near beginning of the file, it is
-        // not such a big deal to be sensitive to their spans for now.
-        //
-        // We hash only the MetaItems instead of the entire Attribute
-        // to avoid hashing the AttrId
-        for attr in krate.attrs.iter() {
-            attr.node.value.hash(&mut state);
-        }
-
-        let hash = state.result();
         return Svh {
             hash: range_step(0u, 64u, 4u).map(|i| hex(hash >> i)).collect()
         };
@@ -114,6 +110,37 @@ impl Svh {
                 _ => 'a' as u8 + b - 10,
             };
             b as char
+        }
+    }
+}
+
+struct CrateInfo<'a> {
+    metadata: &'a Vec<String>,
+    krate: &'a ast::Crate
+}
+//XxStateOrRandomSipState
+impl<'a> Hash for CrateInfo<'a> {
+    fn hash(&self, state: &mut SafeHashState) {
+        for data in self.metadata.iter() {
+            data.hash(state);
+        }
+
+        {
+            let mut visit = svh_visitor::make(state);
+            visit::walk_crate(&mut visit, self.krate);
+        }
+
+        // FIXME (#14132): This hash is still sensitive to e.g. the
+        // spans of the crate Attributes and their underlying
+        // MetaItems; we should make ContentHashable impl for those
+        // types and then use hash_content.  But, since all crate
+        // attributes should appear near beginning of the file, it is
+        // not such a big deal to be sensitive to their spans for now.
+        //
+        // We hash only the MetaItems instead of the entire Attribute
+        // to avoid hashing the AttrId
+        for attr in self.krate.attrs.iter() {
+            attr.node.value.hash(state);
         }
     }
 }
@@ -139,13 +166,13 @@ mod svh_visitor {
     use syntax::visit::{Visitor, FnKind};
 
     use std::hash::Hash;
-    use std::hash::sip::SipState;
+    use std::hash::SafeHashState;
 
     pub struct StrictVersionHashVisitor<'a> {
-        pub st: &'a mut SipState,
+        pub st: &'a mut SafeHashState,
     }
 
-    pub fn make<'a>(st: &'a mut SipState) -> StrictVersionHashVisitor<'a> {
+    pub fn make<'a>(st: &'a mut SafeHashState) -> StrictVersionHashVisitor<'a> {
         StrictVersionHashVisitor { st: st }
     }
 

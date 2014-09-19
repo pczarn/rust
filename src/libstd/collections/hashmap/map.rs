@@ -818,7 +818,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         // Worst case, we'll find one empty bucket among `size + 1` buckets.
         // use mem::drop;
         // use cmp;
-        let size = self.table.size();
+        // let size = self.table.size();
         let mut probe = Bucket::new(MapMutRef { map_ref: self }, &hash);
         let ib = probe.index();
         // let mut lim = ib + 92;
@@ -827,7 +827,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         // let longest_seq = cmp::min(64, size + 1);
         // let mut h1 = 0;
 
-        while probe.index() < ib + 92 {
+        while probe.index() < ib + 96 {
             let mut bucket = match probe.peek() {
                 Empty(bucket) => {
                     // Found a hole!
@@ -867,25 +867,37 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
 
         // optimize the code below for size
         let MapMutRef { map_ref: this } = probe.into_table();
-        let cap = this.table.capacity();
-
-        if size / (cap >> 3) >= 5 {
-            // Load is at least 0.625. With this many occupied buckets,
-            // this situation is very rare.
-            this.resize(cap << 1);
-        } else {
-            // This is enormously unlikely. Allegedly the table layout has
-            // been deliberately crafted. Switch to one-way randomized hashing.
-            this.hasher.reset();
-            let old_table = replace(&mut this.table, RawTable::new(cap));
-
-            for (_, k, v) in old_table.into_iter() {
-                this.swap(k, v);
-            }
-        }
-
+        this.adapt_table();
         // Retry insertion.
         this.insert_or_replace_with(hash, k, v, found_existing)
+    }
+
+    #[cold]
+    fn adapt_table(&mut self) {
+        let size = self.table.size();
+        let cap = self.table.capacity();
+
+        if size >= cap * 5 / 8 {
+        // if size / (cap >> 3) >= 5 {
+            println!("resize from {} size={}", cap, size);
+            // Load is at least 0.625. With this many occupied buckets,
+            // this situation is still very rare.
+            self.resize(cap << 1);
+        } else {
+            println!("reseed at {} size={}", cap, size);
+            // This is enormously unlikely. Allegedly the table layout has
+            // been deliberately crafted. Switch to one-way randomized hashing.
+            self.hasher.reseed();
+
+            let old_table = replace(&mut self.table, RawTable::new(cap));
+
+            for (_, k, v) in old_table.into_iter() {
+                let hash = self.make_hash(&k);
+                self.insert_hashed_nocheck(hash, k, v);
+            }
+        }
+    }
+
     }
 
     /// Inserts an element which has already been hashed, returning a reference

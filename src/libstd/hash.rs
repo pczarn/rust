@@ -66,7 +66,7 @@
 pub use core_collections::hash::{Hash, Hasher, Writer, SafeHashState, XxStateOrRandomSipState, SipSt, XxSt, hash, sip, xxh};
 
 use default::Default;
-use mem;
+// use mem;
 use rand::Rng;
 use rand;
 
@@ -102,7 +102,7 @@ impl Hasher<sip::SipState> for RandomSipHasher {
         self.hasher.hash(value)
     }
 
-    fn reset(&mut self) {
+    fn reseed(&mut self) {
         let mut r = rand::task_rng();
         let r0 = r.gen();
         let r1 = r.gen();
@@ -120,7 +120,10 @@ impl Default for RandomSipHasher {
 /// Adaptive hasher
 #[deriving(Clone)]
 pub struct XxHashOrRandomSipHasher {
-    hasher: sip::SipState,
+    // hasher: sip::SipState,
+    //hasher: sip::SipHasher
+    k0: u64,
+    k1: u64,
 }
 
 impl XxHashOrRandomSipHasher {
@@ -128,7 +131,9 @@ impl XxHashOrRandomSipHasher {
     #[inline]
     pub fn new() -> XxHashOrRandomSipHasher {
         XxHashOrRandomSipHasher {
-            hasher: sip::SipState::new_with_keys(0, 0),
+            k0: 0,
+            k1: 0
+            //sip::SipState::new_with_keys(0, 0),
         }
     }
 }
@@ -143,29 +148,29 @@ impl XxHashOrRandomSipHasher {
 impl Hasher<XxStateOrRandomSipState> for XxHashOrRandomSipHasher {
     #[inline]
     fn hash<T: Hash<XxStateOrRandomSipState>>(&self, value: &T) -> u64 {
-        let copyy: u32 = unsafe {
-            mem::transmute_copy(self)
-        };
-        let mut state = if copyy == 0 {
+        let mut state = if self.k0 == 0 {
             // println!("state 0");
             XxSt(xxh::XxState64::new(0))//.hash(value)
         } else {
             // println!("copy is {}", copyy);
-            SipSt(self.hasher)//.hash(value)
+            SipSt(sip::SipState::new_with_keys(self.k0, self.k1))//.hash(value)
         };
         value.hash(&mut state);
         state.result()
     }
+
+// fixed
 //hash.rs:129:13: 129:47 error: expected collections::hash::Hash<collections::hash::xxh::XxState64>, found collections::hash::Hash (expected struct collections::hash::xxh::XxState64, found struct collections::hash::sip::SipState) [E0095]
 //hash.rs:129             xxh::XxHasher64::new().hash(value)
 //                        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-    fn reset(&mut self) {
+    fn reseed(&mut self) {
         let mut r = rand::task_rng();
-        let mut r0: u64 = r.gen();
-        while r0 == 0u64 { r0 = r.gen(); }
-        let r1 = r.gen();
-        self.hasher = sip::SipState::new_with_keys(r0, r1);
+        self.k0 = 0u64;
+        while self.k0 == 0 {
+            self.k0 = r.gen();
+        }
+        self.k1 = r.gen();
     }
 }
 
