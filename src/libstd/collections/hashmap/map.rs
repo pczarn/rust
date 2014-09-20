@@ -2320,6 +2320,56 @@ mod test_map {
     }
 
     #[test]
+    fn test_collisionsxxh_monitoring_65_n() {
+        use collections::SmallIntMap;
+        use rand;
+        use rand::Rng;
+
+        let mut m = HashMap::new();
+        let mut r = rand::weak_rng();
+
+        for log2_cap in range_inclusive(10, 32-2 - 3 - 1) {
+            let cap: uint = 1 << log2_cap;
+            let (min_elem, max_elem) = (cap * 1 / 4, cap * 3 / 4);
+            // let numsets = if log2_cap > 12 {
+            //     1024
+            // } else {
+            //     256
+            // };
+            let numsets = 1024;
+            let mut dibs = Vec::from_fn(numsets, |_| SmallIntMap::new());
+            m.reserve(cap);
+
+            for _ in range(0u, (1 << (31 - log2_cap))) {
+                while m.len() < min_elem {
+                    let x: u64 = r.gen();
+                    m.insert_get_dib(x, ());
+                }
+                for multiset in dibs.mut_iter() {
+                    for _ in range(0u, (max_elem - min_elem) / numsets) {
+                        loop {
+                            let x: u64 = r.gen();
+                            match m.insert_get_dib(x, ()) {
+                                Some(dib) => {
+                                    multiset.update(dib, 1u, |n, _| n + 1);
+                                    break
+                                }
+                                None => {}
+                            }
+                        }
+                    }
+                }
+
+                m.clear();
+            }
+            // println!("{}", (min_elem, max_elem))
+            // println!("{}", log2_cap);
+            println!("{}", dibs);
+            for multiset in dibs.mut_iter() { multiset.clear() }
+        }
+    }
+
+    #[test]
     fn test_collisionssip_realfactor() {
         use rand;
         use rand::Rng;
