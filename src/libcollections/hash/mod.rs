@@ -98,7 +98,9 @@ impl Writer for XxStateOrRandomSipState {
     fn write(&mut self, bytes: &[u8]) {
         match self {
             &XxSt(ref mut h) => h.write(bytes),
-            &SipSt(ref mut h) => h.write(bytes)
+            &SipSt(ref mut h) => {
+                h.write(bytes)
+            }
         }
     }
 }
@@ -137,6 +139,8 @@ pub trait Hasher<S> {
 
     /// The seed is rerandomized from a task-local rng, if applicable.
     fn reseed(&mut self) {}
+
+    fn is_adaptive(&self) -> bool { false }
 }
 
 pub trait Writer {

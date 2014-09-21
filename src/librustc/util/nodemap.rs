@@ -13,7 +13,7 @@
 #![allow(non_snake_case)]
 
 use std::collections::{HashMap, HashSet};
-use std::hash::{Hasher, Hash, Writer};
+// use std::hash::{Hasher, Hash, Writer};
 use syntax::ast;
 
 pub type FnvHashMap<K, V> = HashMap<K, V>;

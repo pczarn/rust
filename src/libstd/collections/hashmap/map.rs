@@ -819,6 +819,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         // use mem::drop;
         // use cmp;
         // let size = self.table.size();
+        let is_not_adaptive = !self.hasher.is_adaptive();
         let mut probe = Bucket::new(MapMutRef { map_ref: self }, &hash);
         let ib = probe.index();
         // let mut lim = ib + 92;
@@ -827,7 +828,7 @@ impl<K: Eq + Hash<S>, V, S, H: Hasher<S>> HashMap<K, V, H> {
         // let longest_seq = cmp::min(64, size + 1);
         // let mut h1 = 0;
 
-        while probe.index() < ib + 96 {
+        while probe.index() < ib + 64 || is_not_adaptive {
             let mut bucket = match probe.peek() {
                 Empty(bucket) => {
                     // Found a hole!

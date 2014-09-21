@@ -172,6 +172,9 @@ impl Hasher<XxStateOrRandomSipState> for XxHashOrRandomSipHasher {
         }
         self.k1 = r.gen();
     }
+
+    #[inline]
+    fn is_adaptive(&self) -> bool { true }
 }
 
 impl Default for XxHashOrRandomSipHasher {
