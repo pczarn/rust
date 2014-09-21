@@ -2329,7 +2329,7 @@ mod test_map {
         let mut m = HashMap::new();
         let mut r = rand::weak_rng();
 
-        for log2_cap in range_inclusive(10, 32-2 - 3 - 1) {
+        for log2_cap in range_inclusive(8, 32-2 - 3 - 1) {
             let cap: uint = 1 << log2_cap;
             let (min_elem, max_elem) = (cap * 1 / 4, cap * 3 / 4);
             // let numsets = if log2_cap > 12 {
@@ -2337,7 +2337,7 @@ mod test_map {
             // } else {
             //     256
             // };
-            let numsets = 1024;
+            let numsets = 256;
             let mut dibs = Vec::from_fn(numsets, |_| SmallIntMap::new());
             m.reserve(cap);
 
