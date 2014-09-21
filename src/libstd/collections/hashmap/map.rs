@@ -2131,126 +2131,6 @@ mod test_map {
         map[4];
     }
 
-    fn test_collisions<T: Eq + Hash<S>, S, H: Hasher<S>>(m: &mut HashMap<T, int, H>, f: |int| -> T) {
-        for _ in range_inclusive(1u, 50) {
-            for i in range_inclusive(0i, 900) {
-                m.insert(f(i), i);
-            }
-
-            println!("{}", m.dib());
-            assert_eq!(m.table.capacity(), 1024)
-            m.clear();
-        }
-    }
-
-    #[test]
-    fn test_collisionssip() {
-        use rand;
-        use rand::Rng;
-        use hash::RandomSipHasher;
-        let mut m: HashMap<int, int, RandomSipHasher> = HashMap::with_hasher(RandomSipHasher::new());
-        let mut r = rand::task_rng();
-        let start: int = r.gen();
-        test_collisions(&mut m, |i| start + i);
-    }
-
-    #[test]
-    fn test_collisionssip_rng() {
-        use rand;
-        use rand::Rng;
-        use hash::RandomSipHasher;
-        let mut m: HashMap<_, int, RandomSipHasher> = HashMap::with_hasher(RandomSipHasher::new());
-        let mut r = rand::task_rng();
-        test_collisions(&mut m, |_| { let x: u64 = r.gen(); x });
-    }
-
-    #[test]
-    fn test_collisionsxxh_rng() {
-        use rand;
-        use rand::Rng;
-        let mut m: HashMap<_, int> = HashMap::new();
-        let mut r = rand::task_rng();
-        test_collisions(&mut m, |_| { let x: u64 = r.gen(); x });
-    }
-
-    #[test]
-    fn test_collisionsxxh_max() {
-        use rand;
-        use rand::Rng;
-        use cmp;
-        let mut m = HashMap::new();
-        let mut r = rand::task_rng();
-
-        let mut max = 0;
-        let mut sum = 0.0f64;
-        for _ in range_inclusive(1u, 1_00_000) {
-            for i in range_inclusive(0u, 900) {
-                let x: u64 = r.gen();
-                m.insert(x + (i as u64) * 65521, i);
-            }
-
-            let (s, ml) = m.dib();
-            sum += s;
-            max = cmp::max(max, ml);
-
-            // assert_eq!(m.table.capacity(), 1024)
-            m.clear();
-        }
-        println!("{} {}", sum, max);
-    }
-
-    #[test]
-    fn test_collisionsxxh_real() {
-        use rand;
-        use rand::Rng;
-        use cmp;
-        let mut m = HashMap::new();
-        let mut r = rand::task_rng();
-
-        let mut max = 0;
-        let mut sum = 0.0f64;
-        for _ in range_inclusive(1u, 1_000_000) {
-            for i in range_inclusive(0u, 3200) {
-                let x: u64 = r.gen();
-                m.insert(x + (i as u64) * 65521, i);
-            }
-
-            let (s, ml) = m.dib();
-            sum += s;
-            max = cmp::max(max, ml);
-
-            // assert_eq!(m.table.capacity(), 1024)
-            m.clear();
-        }
-        println!("{} {}", sum, max);
-    }
-
-    #[test]
-    fn test_collisionsxxh_realfactor() {
-        use rand;
-        use rand::Rng;
-        use cmp;
-        let mut m = HashMap::new();
-        let mut r = rand::task_rng();
-
-        let mut max = 0;
-        let mut sum = 0.0f64;
-        for _ in range_inclusive(1u, 10_000) {
-            for i in range_inclusive(0u, 1024) {
-                let x: u64 = r.gen();
-                m.insert(x + (i as u64) * 65521, i);
-            }
-
-            let (s, ml) = m.dib();
-            sum += s;
-            max = cmp::max(max, ml);
-
-            // assert_eq!(m.table.capacity(), 1024)
-            m.clear();
-        }
-        println!("{} {}", sum, max);
-    }
-
     #[test]
     fn test_collisionsxxh_monitoring_9_10() {
         use collections::SmallIntMap;
@@ -2321,7 +2201,7 @@ mod test_map {
     }
 
     #[test]
-    fn test_collisionsxxh_monitoring_65_n() {
+    fn collisionsxxh_monitoring_25_75_n() {
         use collections::SmallIntMap;
         use rand;
         use rand::Rng;
@@ -2332,11 +2212,6 @@ mod test_map {
         for log2_cap in range_inclusive(8, 32-2 - 3 - 1) {
             let cap: uint = 1 << log2_cap;
             let (min_elem, max_elem) = (cap * 1 / 4, cap * 3 / 4);
-            // let numsets = if log2_cap > 12 {
-            //     1024
-            // } else {
-            //     256
-            // };
             let numsets = 256;
             let mut dibs = Vec::from_fn(numsets, |_| SmallIntMap::new());
             m.reserve(cap);
@@ -2363,64 +2238,9 @@ mod test_map {
 
                 m.clear();
             }
-            // println!("{}", (min_elem, max_elem))
-            // println!("{}", log2_cap);
+
             println!("{}", dibs);
             for multiset in dibs.mut_iter() { multiset.clear() }
         }
-    }
-
-    #[test]
-    fn test_collisionssip_realfactor() {
-        use rand;
-        use rand::Rng;
-        use cmp;
-        use hash::RandomSipHasher;
-        let mut m: HashMap<_, uint, RandomSipHasher> = HashMap::with_hasher(RandomSipHasher::new());
-        let mut r = rand::task_rng();
-
-        let mut max = 0;
-        let mut sum = 0.0f64;
-        for _ in range_inclusive(1u, 10_000) {
-            for i in range_inclusive(0u, 3200) {
-                let x: u64 = r.gen();
-                m.insert(x + (i as u64) * 65521, i);
-            }
-
-            let (s, ml) = m.dib();
-            sum += s;
-            max = cmp::max(max, ml);
-
-            // assert_eq!(m.table.capacity(), 1024)
-            m.clear();
-        }
-        println!("{} {}", sum, max);
-    }
-
-    #[test]
-    fn test_collisionsxxh_rng2() {
-        use rand;
-        use rand::Rng;
-        let mut m: HashMap<_, int> = HashMap::new();
-        let mut r = rand::task_rng();
-        test_collisions(&mut m, |_| { let x: (u64, u64) = r.gen(); x });
-    }
-
-    #[test]
-    fn test_collisionsxxh() {
-        use rand;
-        use rand::Rng;
-        // use hash::RandomSipHasher;
-        // let mut m: HashMap<int, int, RandomSipHasher> = HashMap::with_hasher(RandomSipHasher::new());
-        let mut m: HashMap<int, int> = HashMap::new();
-        let mut r = rand::task_rng();
-        let start: int = r.gen();
-        test_collisions(&mut m, |i| start + i);
-        // let mut k = 1001;
-
-        // b.iter(|| {
-        //     m.insert(k, k);
-        //     k += 1;
-        // });
     }
 }
