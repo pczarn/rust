@@ -13,8 +13,10 @@ use core::prelude::*;
 use core::default::Default;
 use core::mem;
 use core::ptr;
+use core::slice::bytes::copy_memory;
 
 use super::{Hash, Hasher, Writer};
+
 
 static PRIME1: u32 = 2654435761;
 static PRIME2: u32 = 2246822519;
@@ -28,12 +30,12 @@ static PRIME64_3: u64 =  1609587929392839161;
 static PRIME64_4: u64 =  9650029242287828579;
 static PRIME64_5: u64 =  2870177450012600261;
 
-macro_rules! rotl32(
+macro_rules! rotl32 (
     ($x:expr, $b:expr) =>
     (($x << $b) | ($x >> (32 - $b)))
 )
 
-macro_rules! rotl64(
+macro_rules! rotl64 (
     ($x:expr, $b:expr) =>
     (($x << $b) | ($x >> (64 - $b)))
 )
@@ -42,27 +44,27 @@ macro_rules! rotl64(
 // because they're needed in the following defs;
 // this design could be improved.
 
-macro_rules! u8to64_le (
-    ($buf:expr, $i:expr) =>
-    ($buf[0+$i] as u64 |
-     $buf[1+$i] as u64 << 8 |
-     $buf[2+$i] as u64 << 16 |
-     $buf[3+$i] as u64 << 24 |
-     $buf[4+$i] as u64 << 32 |
-     $buf[5+$i] as u64 << 40 |
-     $buf[6+$i] as u64 << 48 |
-     $buf[7+$i] as u64 << 56);
-    ($buf:expr, $i:expr, $len:expr) =>
-    ({
-        let mut t = 0;
-        let mut out = 0u64;
-        while t < $len {
-            out |= $buf[t+$i] as u64 << t*8;
-            t += 1;
-        }
-        out
-    });
-)
+// macro_rules! u8to64_le (
+//     ($buf:expr, $i:expr) =>
+//     ($buf[0+$i] as u64 |
+//      $buf[1+$i] as u64 << 8 |
+//      $buf[2+$i] as u64 << 16 |
+//      $buf[3+$i] as u64 << 24 |
+//      $buf[4+$i] as u64 << 32 |
+//      $buf[5+$i] as u64 << 40 |
+//      $buf[6+$i] as u64 << 48 |
+//      $buf[7+$i] as u64 << 56);
+//     ($buf:expr, $i:expr, $len:expr) =>
+//     ({
+//         let mut t = 0;
+//         let mut out = 0u64;
+//         while t < $len {
+//             out |= $buf[t+$i] as u64 << t*8;
+//             t += 1;
+//         }
+//         out
+//     });
+// )
 
 macro_rules! u8to32_le (
     ($buf:expr, $i:expr) =>
@@ -81,6 +83,21 @@ macro_rules! u8to32_le (
         out
     });
 )
+
+#[inline(always)]
+pub fn u8to64_le(data: &[u8], start: uint) -> u64 {
+    use core::ptr::copy_nonoverlapping_memory;
+    use core::num::Int;
+    use core::slice::MutableSlice;
+
+    let mut buf = [0u8, ..8];
+    unsafe {
+        let ptr = data.slice(start, start + 8).as_ptr();
+        let out = buf.as_mut_ptr();
+        copy_nonoverlapping_memory(out, ptr, 8);
+        Int::from_le(*(out as *const u64))
+    }
+}
 
 pub struct XxState32 {
     // field names match the C implementation
@@ -317,14 +334,14 @@ impl XxState64 {
 
                 let mut h64 = rotl64!(v1, 1) + rotl64!(v2, 7) + rotl64!(v3, 12) + rotl64!(v4, 18);
 
-                v1 *= PRIME64_2; v1 = rotl64!(v1, 31); v1 *= PRIME64_1; h64 ^= v1;
-                h64 = h64 * PRIME64_1 + PRIME64_4;
-                v2 *= PRIME64_2; v2 = rotl64!(v2, 31); v2 *= PRIME64_1; h64 ^= v2;
-                h64 = h64 * PRIME64_1 + PRIME64_4;
-                v3 *= PRIME64_2; v3 = rotl64!(v3, 31); v3 *= PRIME64_1; h64 ^= v3;
-                h64 = h64 * PRIME64_1 + PRIME64_4;
-                v4 *= PRIME64_2; v4 = rotl64!(v4, 31); v4 *= PRIME64_1; h64 ^= v4;
-                h64 = h64 * PRIME64_1 + PRIME64_4;
+                v1 *= PRIME64_2; v1 = rotl64!(v1, 31); v1 *= PRIME64_1;
+                v2 *= PRIME64_2; v2 = rotl64!(v2, 31); v2 *= PRIME64_1;
+                v3 *= PRIME64_2; v3 = rotl64!(v3, 31); v3 *= PRIME64_1;
+                v4 *= PRIME64_2; v4 = rotl64!(v4, 31); v4 *= PRIME64_1;
+                h64 ^= v1; h64 = h64 * PRIME64_1 + PRIME64_4;
+                h64 ^= v2; h64 = h64 * PRIME64_1 + PRIME64_4;
+                h64 ^= v3; h64 = h64 * PRIME64_1 + PRIME64_4;
+                h64 ^= v4; h64 = h64 * PRIME64_1 + PRIME64_4;
 
                 h64
             }
@@ -333,7 +350,7 @@ impl XxState64 {
         h64 += self.total_len as u64;
 
         let rem = (self.total_len & 31) / 8;
-        for _ in range (0, rem) {
+        for _ in range(0, rem) {
             let mut k1: u64 = *p;
             k1 *= PRIME64_2;
             k1 = rotl64!(k1, 31);
@@ -341,7 +358,6 @@ impl XxState64 {
             h64 ^= k1;
             h64 = rotl64!(h64, 27) * PRIME64_1 + PRIME64_4;
             p = p.offset(1);
-
         }
 
         let mut dwp = p as *const u32;
@@ -371,64 +387,63 @@ impl XxState64 {
 
 impl Writer for XxState64 {
     #[inline]
-    fn write(&mut self, msg: &[u8]) {unsafe{
-        let mut len = msg.len();
-        let mut data = msg.as_ptr();
+    fn write(&mut self, mut msg: &[u8]) {
+        let len = msg.len();
 
         self.total_len += len as u64;
 
         if self.memsize + len < 32 {
             // not enough data for one 32-byte chunk, so just fill the buffer and return.
-            let dst: *mut u8 = (&mut self.memory as *mut _ as *mut u8).offset(self.memsize as int);
-            ptr::copy_nonoverlapping_memory(dst, data, len);
+            copy_memory(self.memory.slice_from_mut(self.memsize), msg);
             self.memsize += len;
             return;
         }
 
+        // let mut i = 0;
+
         if self.memsize != 0 {
             // some data left from previous update
             // fill the buffer and eat it
-            // XXH_memcpy(state->memory + state->memsize, input, 32-state->memsize);
-            let dst: *mut u8 = (&mut self.memory[0] as *mut u8).offset(self.memsize as int);
-            let bump = 32 - self.memsize;
-            ptr::copy_nonoverlapping_memory(dst, data, bump as uint);
-
-            let mut p = &self.memory as *const _ as *const u64;
+            let pos = 32 - self.memsize;
+            let (head, _msg) = msg.split_at(pos);
+            msg = _msg;
+            copy_memory(self.memory.slice_from_mut(self.memsize), head);
 
             let mut v1: u64 = self.v1;
             let mut v2: u64 = self.v2;
             let mut v3: u64 = self.v3;
             let mut v4: u64 = self.v4;
 
-            v1 += (*p) * PRIME64_2; v1 = rotl64!(v1, 31); v1 *= PRIME64_1; p = p.offset(1);
-            v2 += (*p) * PRIME64_2; v2 = rotl64!(v2, 31); v2 *= PRIME64_1; p = p.offset(1);
-            v3 += (*p) * PRIME64_2; v3 = rotl64!(v3, 31); v3 *= PRIME64_1; p = p.offset(1);
-            v4 += (*p) * PRIME64_2; v4 = rotl64!(v4, 31); v4 *= PRIME64_1;
+            v1 += u8to64_le(self.memory,  0) * PRIME64_2; v1 = rotl64!(v1, 31); v1 *= PRIME64_1;
+            v2 += u8to64_le(self.memory,  8) * PRIME64_2; v2 = rotl64!(v2, 31); v2 *= PRIME64_1;
+            v3 += u8to64_le(self.memory, 16) * PRIME64_2; v3 = rotl64!(v3, 31); v3 *= PRIME64_1;
+            v4 += u8to64_le(self.memory, 24) * PRIME64_2; v4 = rotl64!(v4, 31); v4 *= PRIME64_1;
 
             self.v1 = v1;
             self.v2 = v2;
             self.v3 = v3;
             self.v4 = v4;
-
-            data = data.offset(bump as int);
-            len -= bump;
-            self.memsize = 0;
         }
 
-        let mut p = data as *const u64;
-        let chunks = len >> 8;
-        let rem = len & 31;
+        let end = msg.len() & !31;
+        let left = msg.len() & 31;
 
         let mut v1: u64 = self.v1;
         let mut v2: u64 = self.v2;
         let mut v3: u64 = self.v3;
         let mut v4: u64 = self.v4;
 
-        for _ in range(0, chunks) {
-            v1 += (*p) * PRIME64_2; v1 = rotl64!(v1, 31); v1 *= PRIME64_1; p = p.offset(1);
-            v2 += (*p) * PRIME64_2; v2 = rotl64!(v2, 31); v2 *= PRIME64_1; p = p.offset(1);
-            v3 += (*p) * PRIME64_2; v3 = rotl64!(v3, 31); v3 *= PRIME64_1; p = p.offset(1);
-            v4 += (*p) * PRIME64_2; v4 = rotl64!(v4, 31); v4 *= PRIME64_1; p = p.offset(1);
+        let (msg, rest) = msg.split_at(end);
+        for chunk in msg.chunks(32) {
+            let p1 = u8to64_le(chunk, 0);
+            let p2 = u8to64_le(chunk, 8);
+            let p3 = u8to64_le(chunk, 16);
+            let p4 = u8to64_le(chunk, 24);
+
+            v1 += p1 * PRIME64_2; v1 = rotl64!(v1, 31); v1 *= PRIME64_1;
+            v2 += p2 * PRIME64_2; v2 = rotl64!(v2, 31); v2 *= PRIME64_1;
+            v3 += p3 * PRIME64_2; v3 = rotl64!(v3, 31); v3 *= PRIME64_1;
+            v4 += p4 * PRIME64_2; v4 = rotl64!(v4, 31); v4 *= PRIME64_1;
         }
 
         self.v1 = v1;
@@ -436,12 +451,11 @@ impl Writer for XxState64 {
         self.v3 = v3;
         self.v4 = v4;
 
-        if rem > 0 {
-            let dst = &mut self.memory[0] as *mut u8;
-            ptr::copy_nonoverlapping_memory(dst, data, rem);
-            self.memsize = rem;
+        if left > 0 {
+            copy_memory(self.memory, rest);
         }
-    }}
+        self.memsize = left;
+    }
 }
 
 impl Clone for XxState64 {
