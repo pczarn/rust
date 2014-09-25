@@ -409,6 +409,10 @@ fn initial_syntax_expander_table() -> SyntaxEnv {
                        builtin_normal_expander(
                             ext::quote::expand_quote_stmt));
 
+    syntax_expanders.insert(intern("matcher"),
+                       builtin_normal_expander(
+                            ext::quote::expand_matcher));
+
     syntax_expanders.insert(intern("line"),
                             builtin_normal_expander(
                                     ext::source_util::expand_line));

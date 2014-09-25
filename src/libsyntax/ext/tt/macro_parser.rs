@@ -81,6 +81,7 @@ use ast;
 use ast::{Matcher, MatchTok, MatchSeq, MatchNonterminal, Ident};
 use codemap::{BytePos, mk_sp};
 use codemap;
+use ext::base::ExtCtxt;
 use parse::lexer::*; //resolve bug?
 use parse::ParseSess;
 use parse::attr::ParserAttr;
@@ -145,6 +146,30 @@ pub fn initial_matcher_pos(ms: Vec<Matcher> , sep: Option<Token>, lo: BytePos)
     }
 }
 
+struct LhsMatcher<'a> {
+    lhs: &'a [Matcher]
+}
+
+impl<'a> LhsMatcher<'a> {
+    fn new(matchers: &[Matcher]) -> LhsMatcher {
+        LhsMatcher {
+            lhs: matchers
+        }
+    }
+
+    fn match_tts(&self,
+                 cx: &ExtCtxt,
+                 tts: &[ast::TokenTree])
+                 -> ParseResult<Vec<Rc<NamedMatch>>> {
+        let tt_rdr = new_tt_reader(&cx.parse_sess().span_diagnostic,
+                                   None,
+                                   tts.iter()
+                                      .map(|x| (*x).clone())
+                                      .collect());
+        parse_without_names(cx.parse_sess(), cx.cfg(), tt_rdr, self.lhs)
+    }
+}
+
 /// NamedMatch is a pattern-match result for a single ast::MatchNonterminal:
 /// so it is associated with a single ident in a parse, and all
 /// MatchedNonterminal's in the NamedMatch have the same nonterminal type
@@ -200,8 +225,9 @@ pub fn nameize(p_s: &ParseSess, ms: &[Matcher], res: &[Rc<NamedMatch>])
     ret_val
 }
 
-pub enum ParseResult {
-    Success(HashMap<Ident, Rc<NamedMatch>>),
+//HashMap<Ident, Rc<NamedMatch>>
+pub enum ParseResult<T = HashMap<Ident, Rc<NamedMatch>>> {
+    Success(T),
     Failure(codemap::Span, String),
     Error(codemap::Span, String)
 }
@@ -222,6 +248,18 @@ pub fn parse_or_else(sess: &ParseSess,
     }
 }
 
+pub fn parse(sess: &ParseSess,
+             cfg: ast::CrateConfig,
+             mut rdr: TtReader,
+             ms: &[Matcher])
+             -> ParseResult {
+    match parse_without_names(sess, cfg, rdr, ms) {
+        Success(v) => Success(nameize(sess, ms, v.as_slice())),
+        Failure(sp, other) => Failure(sp, other),
+        Error(sp, other) => Error(sp, other),
+    }
+}
+
 /// Perform a token equality check, ignoring syntax context (that is, an
 /// unhygienic comparison)
 pub fn token_name_eq(t1 : &Token, t2 : &Token) -> bool {
@@ -233,11 +271,11 @@ pub fn token_name_eq(t1 : &Token, t2 : &Token) -> bool {
     }
 }
 
-pub fn parse(sess: &ParseSess,
+pub fn parse_without_names(sess: &ParseSess,
              cfg: ast::CrateConfig,
              mut rdr: TtReader,
              ms: &[Matcher])
-             -> ParseResult {
+             -> ParseResult<Vec<Rc<NamedMatch>>> {
     let mut cur_eis = Vec::new();
     cur_eis.push(initial_matcher_pos(ms.iter()
                                        .map(|x| (*x).clone())
@@ -369,7 +407,7 @@ pub fn parse(sess: &ParseSess,
                 for dv in eof_eis.get_mut(0).matches.iter_mut() {
                     v.push(dv.pop().unwrap());
                 }
-                return Success(nameize(sess, ms, v.as_slice()));
+                return Success(v);
             } else if eof_eis.len() > 1u {
                 return Error(sp, "ambiguity: multiple successful parses".to_string());
             } else {

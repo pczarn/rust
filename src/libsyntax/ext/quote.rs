@@ -9,7 +9,7 @@
 // except according to those terms.
 
 use ast;
-use codemap::Span;
+use codemap::{Span, respan};
 use ext::base::ExtCtxt;
 use ext::base;
 use ext::build::AstBuilder;
@@ -795,4 +795,103 @@ fn expand_parse_call(cx: &ExtCtxt,
                                    arg_exprs);
 
     expand_wrapper(cx, sp, cx_expr, expr)
+}
+
+fn mk_macro_parser_path(cx: &ExtCtxt, sp: Span, name: &str, stmts: &mut Vec<P<ast::Stmt>>) -> P<ast::Expr> {
+    let idents = vec!(id_ext("syntax"), id_ext("ext"), id_ext("tt"), id_ext("macro_parser"),
+                                                                     id_ext(name));
+    cx.expr_path(cx.path_global(sp, idents))
+}
+
+fn mk_matcher(cx: &ExtCtxt, sp: Span, mtch: &ast::Matcher) -> Vec<P<ast::Stmt>> {
+    match mtch.node {
+        ast::MatchTok(ref tok) => {
+            // let e_sp = cx.expr_ident(sp, id_ext("_sp"));
+            let e_tok = cx.expr_call(sp,
+                                     mk_ast_path(cx, sp, "MatchToken"),
+                                     vec!(mk_token(cx, sp, tok)));
+            let e_push =
+                cx.expr_method_call(sp,
+                                    cx.expr_ident(sp, id_ext("ms")),
+                                    id_ext("push"),
+                                    vec!(e_tok));
+            vec!(cx.stmt_expr(e_push))
+        }
+
+        // ast::TTDelim(ref tts) => mk_tts(cx, sp, tts.as_slice()),
+        ast::MatchSeq(..) => fail!("TTSeq in quote!"),
+
+        ast::MatchNonterminal(label, kind, pos) => {
+            // tt.push_all_move($ident.to_tokens(ext_cx))
+
+            let ident_label = cx.expr_call(sp,
+                                           mk_token_path(cx, sp, "str_to_ident"),
+                                           vec!(cx.expr_str(sp, token::get_ident(label))));
+
+            let ident_kind = cx.expr_call(sp,
+                                          mk_token_path(cx, sp, "str_to_ident"),
+                                          vec!(cx.expr_str(sp, token::get_ident(kind))));
+
+            let e_nt = cx.expr_call(sp,
+                                    mk_ast_path(cx, sp, "MatchNonterminal"),
+                                    vec!(ident_label, ident_kind, cx.expr_uint(sp, pos)));
+            let e_push =
+                cx.expr_method_call(sp,
+                                    cx.expr_ident(sp, id_ext("ms")),
+                                    id_ext("push"),
+                                    vec!(e_nt));
+            vec!(cx.stmt_expr(e_push))
+        }
+    }
+}
+
+fn mk_matchers(cx: &ExtCtxt, sp: Span, matchers: &[ast::Matcher])
+    -> Vec<P<ast::Stmt>> {
+    let mut ss = Vec::new();
+    for matcher in matchers.iter() {
+        ss.push_all_move(mk_matcher(cx, sp, matcher));
+    }
+    ss
+}
+
+pub fn expand_matcher(cx: &mut ExtCtxt,
+                      sp: Span,
+                      tts: &[ast::TokenTree])
+                      -> Box<base::MacResult+'static> {
+    let mut p = cx.new_parser_from_tts(tts);
+    // p.quote_depth += 1u;
+    let lhs = p.parse_matchers();
+
+    let stmt_let_ms = cx.stmt_let(sp, true, id_ext("ms"), cx.expr_vec_ng(sp));
+    // mk_matchers(cx, sp, lhs.as_slice());
+
+    // let e_attrs = cx.expr_vec_ng(sp);
+    // let expanded = expand_parse_call(cx, sp, "parse_stmt",
+                                    // vec!(e_attrs), tts);
+
+    // vector.push(cx.expr_call(sp, mk_macro_parser_path("parse_without_names")));
+
+    let matchers_slice = cx.expr_method_call(sp,
+                                             cx.expr_ident(sp, id_ext("tt")),
+                                             id_ext("as_slice"),
+                                             vec!());
+
+    let result = cx.expr_call_global(sp, vec!(
+        cx.ident_of("syntax"),
+        cx.ident_of("ext"),
+        cx.ident_of("tt"),
+        cx.ident_of("macro_parser"),
+        cx.ident_of("LhsMatcher"),
+        cx.ident_of("new")), vec!(matchers_slice));
+
+    let mut vector = vec![stmt_let_ms];
+    vector.push_all_move(mk_matchers(cx, sp, lhs.as_slice()));
+
+    let block = cx.expr_block(
+        cx.block_all(sp,
+                     Vec::new(),
+                     vector,
+                     Some(result)));
+
+    base::MacExpr::new(block)
 }
