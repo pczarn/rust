@@ -9,7 +9,7 @@
 // except according to those terms.
 
 use ast;
-use codemap::{Span, respan};
+use codemap::Span;
 use ext::base::ExtCtxt;
 use ext::base;
 use ext::build::AstBuilder;
@@ -797,12 +797,17 @@ fn expand_parse_call(cx: &ExtCtxt,
     expand_wrapper(cx, sp, cx_expr, expr)
 }
 
-fn mk_macro_parser_path(cx: &ExtCtxt, sp: Span, name: &str, stmts: &mut Vec<P<ast::Stmt>>) -> P<ast::Expr> {
-    let idents = vec!(id_ext("syntax"), id_ext("ext"), id_ext("tt"), id_ext("macro_parser"),
-                                                                     id_ext(name));
+fn mk_codemap_path(cx: &ExtCtxt, sp: Span, name: &str) -> P<ast::Expr> {
+    let idents = vec!(id_ext("syntax"), id_ext("codemap"), id_ext(name));
     cx.expr_path(cx.path_global(sp, idents))
 }
 
+// fn mk_macro_parser_path(cx: &ExtCtxt, sp: Span, name: &str) -> P<ast::Expr> {
+//     let idents = vec!(id_ext("syntax"), id_ext("ext"), id_ext("tt"), id_ext("macro_parser"),
+//                                                                      id_ext(name));
+//     cx.expr_path(cx.path_global(sp, idents))
+// }
+//, stmts: &mut Vec<P<ast::Stmt>>
 fn mk_matcher(cx: &ExtCtxt, sp: Span, mtch: &ast::Matcher) -> Vec<P<ast::Stmt>> {
     match mtch.node {
         ast::MatchTok(ref tok) => {
@@ -810,6 +815,9 @@ fn mk_matcher(cx: &ExtCtxt, sp: Span, mtch: &ast::Matcher) -> Vec<P<ast::Stmt>> 
             let e_tok = cx.expr_call(sp,
                                      mk_ast_path(cx, sp, "MatchToken"),
                                      vec!(mk_token(cx, sp, tok)));
+
+            let e_tok = cx.expr_call(sp, mk_codemap_path(cx, sp, "dummy_spanned"), vec!(e_tok));
+
             let e_push =
                 cx.expr_method_call(sp,
                                     cx.expr_ident(sp, id_ext("ms")),
@@ -819,7 +827,42 @@ fn mk_matcher(cx: &ExtCtxt, sp: Span, mtch: &ast::Matcher) -> Vec<P<ast::Stmt>> 
         }
 
         // ast::TTDelim(ref tts) => mk_tts(cx, sp, tts.as_slice()),
-        ast::MatchSeq(..) => fail!("TTSeq in quote!"),
+        ast::MatchSeq(ref ms, ref delim, x, pos_lo, pos_hi) => {
+            let mut vector = vec!(cx.stmt_let(sp, true, id_ext("ms"), cx.expr_vec_ng(sp)));
+
+            for inner_mtch in ms.iter() {
+                vector.push_all_move(mk_matcher(cx, sp, inner_mtch));
+            }
+
+            let e_ms = 
+                cx.expr_block(
+                    cx.block_all(sp,
+                                 Vec::new(),
+                                 vector,
+                                 Some(cx.expr_ident(sp, id_ext("ms")))));
+
+            let e_delim = match delim {
+                &Some(ref tok) => cx.expr_some(sp, mk_token(cx, sp, tok)),
+                &None => cx.expr_none(sp)
+            };
+
+            let e_seq = cx.expr_call(sp,
+                                     mk_ast_path(cx, sp, "MatchSeq"),
+                                     vec!(e_ms,
+                                          e_delim,
+                                          cx.expr_bool(sp, x),
+                                          cx.expr_uint(sp, pos_lo),
+                                          cx.expr_uint(sp, pos_hi)));
+
+            let e_seq = cx.expr_call(sp, mk_codemap_path(cx, sp, "dummy_spanned"), vec!(e_seq));
+
+            let e_push =
+                cx.expr_method_call(sp,
+                                    cx.expr_ident(sp, id_ext("ms")),
+                                    id_ext("push"),
+                                    vec!(e_seq));
+            vec!(cx.stmt_expr(e_push))
+        }
 
         ast::MatchNonterminal(label, kind, pos) => {
             // tt.push_all_move($ident.to_tokens(ext_cx))
@@ -835,6 +878,9 @@ fn mk_matcher(cx: &ExtCtxt, sp: Span, mtch: &ast::Matcher) -> Vec<P<ast::Stmt>> 
             let e_nt = cx.expr_call(sp,
                                     mk_ast_path(cx, sp, "MatchNonterminal"),
                                     vec!(ident_label, ident_kind, cx.expr_uint(sp, pos)));
+
+            let e_nt = cx.expr_call(sp, mk_codemap_path(cx, sp, "dummy_spanned"), vec!(e_nt));
+
             let e_push =
                 cx.expr_method_call(sp,
                                     cx.expr_ident(sp, id_ext("ms")),
@@ -871,10 +917,11 @@ pub fn expand_matcher(cx: &mut ExtCtxt,
 
     // vector.push(cx.expr_call(sp, mk_macro_parser_path("parse_without_names")));
 
-    let matchers_slice = cx.expr_method_call(sp,
-                                             cx.expr_ident(sp, id_ext("tt")),
-                                             id_ext("as_slice"),
-                                             vec!());
+    // let matchers_slice = cx.expr_method_call(sp,
+    //                                          cx.expr_ident(sp, id_ext("ms")),
+    //                                          id_ext("as_slice"),
+    //                                          vec!());
+    let matchers_vec = cx.expr_ident(sp, id_ext("ms"));
 
     let result = cx.expr_call_global(sp, vec!(
         cx.ident_of("syntax"),
@@ -882,7 +929,7 @@ pub fn expand_matcher(cx: &mut ExtCtxt,
         cx.ident_of("tt"),
         cx.ident_of("macro_parser"),
         cx.ident_of("LhsMatcher"),
-        cx.ident_of("new")), vec!(matchers_slice));
+        cx.ident_of("new")), vec!(matchers_vec));
 
     let mut vector = vec![stmt_let_ms];
     vector.push_all_move(mk_matchers(cx, sp, lhs.as_slice()));

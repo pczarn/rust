@@ -146,27 +146,39 @@ pub fn initial_matcher_pos(ms: Vec<Matcher> , sep: Option<Token>, lo: BytePos)
     }
 }
 
-struct LhsMatcher<'a> {
-    lhs: &'a [Matcher]
+pub struct LhsMatcher {
+    lhs: Vec<Matcher>
 }
 
-impl<'a> LhsMatcher<'a> {
-    fn new(matchers: &[Matcher]) -> LhsMatcher {
+impl LhsMatcher {
+    pub fn new(matchers: Vec<Matcher>) -> LhsMatcher {
         LhsMatcher {
             lhs: matchers
         }
     }
 
-    fn match_tts(&self,
-                 cx: &ExtCtxt,
-                 tts: &[ast::TokenTree])
-                 -> ParseResult<Vec<Rc<NamedMatch>>> {
+    pub fn match_tts(&self,
+                     cx: &ExtCtxt,
+                     tts: &[ast::TokenTree])
+                     -> ParseResult<Vec<Rc<NamedMatch>>> {
         let tt_rdr = new_tt_reader(&cx.parse_sess().span_diagnostic,
                                    None,
                                    tts.iter()
                                       .map(|x| (*x).clone())
                                       .collect());
-        parse_without_names(cx.parse_sess(), cx.cfg(), tt_rdr, self.lhs)
+        parse_without_names(cx.parse_sess(), cx.cfg(), tt_rdr, self.lhs.as_slice())
+    }
+
+    pub fn match_tts_with_names(&self,
+                                cx: &ExtCtxt,
+                                tts: &[ast::TokenTree])
+                                -> ParseResult {
+        let tt_rdr = new_tt_reader(&cx.parse_sess().span_diagnostic,
+                                   None,
+                                   tts.iter()
+                                      .map(|x| (*x).clone())
+                                      .collect());
+        parse(cx.parse_sess(), cx.cfg(), tt_rdr, self.lhs.as_slice())
     }
 }
 
@@ -250,7 +262,7 @@ pub fn parse_or_else(sess: &ParseSess,
 
 pub fn parse(sess: &ParseSess,
              cfg: ast::CrateConfig,
-             mut rdr: TtReader,
+             rdr: TtReader,
              ms: &[Matcher])
              -> ParseResult {
     match parse_without_names(sess, cfg, rdr, ms) {
