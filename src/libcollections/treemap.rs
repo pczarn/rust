@@ -705,6 +705,79 @@ impl<K: Ord, V> TreeMap<K, V> {
     pub fn upper_bound_mut<'a>(&'a mut self, k: &K) -> MutEntries<'a, K, V> {
         bound_setup!(self.iter_mut_for_traversal(), k, false)
     }
+
+    fn entry<'a>(&'a mut self, key: K) -> Entry<'a, K, V> {
+        tree_find_entry_with(self, |k2| key.cmp(k2))
+    }
+}
+
+/// A view into a single location in a map, which may be vacant or occupied
+pub enum Entry<'a, K:'a, V:'a> { // ? bounds
+    /// An occupied Entry
+    Occupied(OccupiedEntry<'a, K, V>),
+    /// A vacant Entry
+    Vacant(VacantEntry<'a, K, V>),
+}
+
+struct OccupiedEntry<'a> {
+
+    path: u64
+}
+
+struct VacantEntry<'a> {
+    
+    path: u64
+}
+
+impl<'a, K, V> OccupiedEntry<'a, K, V> {
+    /// Gets a reference to the value in the entry
+    pub fn get(&self) -> &V {
+        let (_, v) = self.elem.read();
+        v
+    }
+
+    /// Gets a mutable reference to the value in the entry
+    pub fn get_mut(&mut self) -> &mut V {
+        let (_, v) = self.elem.read_mut();
+        v
+    }
+
+    /// Converts the OccupiedEntry into a mutable reference to the value in the entry
+    /// with a lifetime bound to the map itself
+    pub fn into_mut(self) -> &'a mut V {
+        let (_, v) = self.elem.into_mut_refs();
+        v
+    }
+
+    /// Sets the value of the entry, and returns the entry's old value
+    pub fn set(&mut self, mut value: V) -> V {
+        let old_value = self.get_mut();
+        mem::swap(&mut value, old_value);
+        value
+    }
+
+    /// Takes the value out of the entry, and returns it
+    pub fn take(self) -> V {
+        let (_, _, v) = self.elem.take();
+        v
+    }
+}
+
+impl<'a, K, V> VacantEntry<'a, K, V> {
+    /// Sets the value of the entry with the VacantEntry's key,
+    /// and returns a mutable reference to it
+    pub fn set(self, value: V) -> &'a mut V {
+        match self.elem {
+            NeqElem(bucket, ib) => {
+                robin_hood(bucket, ib, self.hash, self.key, value)
+            }
+            NoElem(bucket) => {
+                let full = bucket.put(self.hash, self.key, value);
+                let (_, v) = full.into_mut_refs();
+                v
+            }
+        }
+    }
 }
 
 /// Lazy forward iterator over a map
@@ -1544,6 +1617,53 @@ fn tree_find_with_mut<'r, K, V>(node: &'r mut Option<Box<TreeNode<K, V>>>,
                 }
             }
             None => return None
+        }
+    }
+}
+
+// See comments above tree_find_with
+fn tree_find_entry_with<'r, K, V>(node: &'r mut Option<Box<TreeNode<K, V>>>,
+                                f: |&K| -> Ordering) -> Entry<&'a, K, V> {
+
+    let root = node;
+    let mut current: *mut _ = node;
+    let mut path = 1u64;
+    loop {
+        path <<= 1;
+        let temp = current; // hack to appease borrowck
+        unsafe {
+            match *temp {
+                Some(ref mut r) => {
+                    match f(&r.key) {
+                        Less => {
+                            current = &mut r.left;
+                        }
+                        Greater => {
+                            path |= 1;
+                            current = &mut r.right;
+                        }
+                        Equal => {
+                            let leading_zeros = path.leading_zeros();
+                            path <<= leading_zeros + 1;
+                            return (Some(r), path)
+                            return Occupied(OccupiedEntry {
+                                node: temp,
+                                root: node,
+                                path: path,
+                                depth: u64::BITS - leading_zeros - 2;
+                            });
+                        }
+                    }
+                }
+                None => {
+                    path <<= path.leading_zeros() + 1;
+                    return Vacant(VacantEntry {
+                        node: temp,
+                        root: node,
+                        path: path,
+                    });
+                }
+            }
         }
     }
 }
