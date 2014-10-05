@@ -615,7 +615,7 @@ pub enum TokenTree {
     // TTMatchSeq(Rc<Vec<TokenTree>>, Option<::parse::token::Token>, bool, uint, uint),
 
     /// match an nt
-    TTMatchNonterminal(Span, Ident, Ident, uint),
+    TTMatchNonterminal(Span, Ident, Ident, bool, bool, uint),
 
     // These only make sense for right-hand-sides of MBE macros:
 
@@ -631,16 +631,25 @@ pub enum TokenTree {
 
 pub fn tt_to_tts(tt: TokenTree) -> Rc<Vec<TokenTree>> {
     match tt {
-        TTDocComment(Span, Name) => {
-            vec![token::POUND, TTDelim(vec![token::LBRACKET,  token::RBRACKET])]
+        TTDocComment(sp, name) => {
+            let doc = MetaNameValue(intern_and_get_ident("doc"),
+                                    LitStr(get_ident(name), CookedStr));
+            let doc = token::NtMeta(P(respan(sp, doc)));
+            Rc::new(vec![TTTok(sp, token::POUND),
+                         TTDelim(Rc::new(vec![TTTok(sp, token::LBRACKET),
+                                              TTTok(sp, token::INTERPOLATED(doc)),
+                                              TTTok(sp, token::RBRACKET)]))])
         }
-        TTMatchNonterminal(..) => {
-            fail!()
-            // vec![TTNonterminal]
+        TTNonterminal(sp, name, namep) => {
+            Rc::new(vec![TTTok(sp, token::DOLLAR),
+                         TTTok(sp, token::IDENT(name, namep))])
         }
-        TTNonterminal(sp, name, followed) => {
-            Rc::new(vec![token::DOLLAR, ])
+        TTMatchNonterminal(sp, name, kind, namep, kindp, _) => {
+            Rc::new(vec![TTNonterminal(sp, name, namep),
+                         TTTok(sp, token::COLON),
+                         TTTok(sp, token::IDENT(kind, kindp))])
         }
+        _ => fail!()
     }
 }
 

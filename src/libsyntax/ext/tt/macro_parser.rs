@@ -99,7 +99,7 @@ nonempty body. */
 
 #[deriving(Clone)]
 pub struct MatcherPos {
-    elts: Vec<ast::Matcher> , // maybe should be <'>? Need to understand regions.
+    elts: Vec<ast::TokenTree> , // maybe should be <'>? Need to understand regions.
     sep: Option<Token>,
     idx: uint,
     up: Option<Box<MatcherPos>>,
@@ -251,7 +251,7 @@ pub enum ParseResult<T = HashMap<Ident, Rc<NamedMatch>>> {
 pub fn parse_or_else(sess: &ParseSess,
                      cfg: ast::CrateConfig,
                      rdr: TtReader,
-                     ms: Vec<Matcher> )
+                     ms: Vec<TokenTree> )
                      -> HashMap<Ident, Rc<NamedMatch>> {
     match parse(sess, cfg, rdr, ms.as_slice()) {
         Success(m) => m,
@@ -378,7 +378,7 @@ pub fn parse_without_names(sess: &ParseSess,
             } else {
                 match ei.elts.get(idx).node.clone() {
                   /* need to descend into sequence */
-                  MatchSeq(ref matchers, ref sep, zero_ok,
+                  TTSeq(ref matchers, ref sep, zero_ok,
                            match_num) => {
                     if zero_ok {
                         let mut new_ei = ei.clone();
@@ -407,16 +407,17 @@ pub fn parse_without_names(sess: &ParseSess,
                         sp_lo: sp.lo
                     });
                   }
-                  MatchNonterminal(_,_,_) => {
+                  TTMatchNonterminal(_,_,_) => {
                       bb_eis.push(ei)
                   }
-                  MatchTok(ref t) => {
+                  TTTok(_, ref t) => {
                     let mut ei_t = ei.clone();
                     if token_name_eq(t,&tok) {
                         ei_t.idx += 1;
                         next_eis.push(ei_t);
                     }
                   }
+                  _ => fail!()
                 }
             }
         }
@@ -464,7 +465,7 @@ pub fn parse_without_names(sess: &ParseSess,
 
                 let mut ei = bb_eis.pop().unwrap();
                 match ei.elts.get(ei.idx).node {
-                  MatchNonterminal(_, _, name) => {
+                  TTMatchNonterminal(_, _, name) => {
                     let name_string = token::get_ident(name);
                     ei.matches.get_mut(ei.match_cur).push(Rc::new(MatchedNonterminal(
                         parse_nt(&mut rust_parser, name_string.get()))));
