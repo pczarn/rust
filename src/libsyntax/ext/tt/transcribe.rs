@@ -84,15 +84,16 @@ fn lookup_cur_matched_by_matched(r: &TtReader, start: Rc<NamedMatch>) -> Rc<Name
     })
 }
 
-fn lookup_cur_matched(r: &TtReader, name: Ident) -> Rc<NamedMatch> {
+fn lookup_cur_matched(r: &TtReader, name: Ident) -> Option<Rc<NamedMatch>> {
     let matched_opt = r.interpolations.find_copy(&name);
     match matched_opt {
         Some(s) => lookup_cur_matched_by_matched(r, s),
         None => {
-            r.sp_diag
-             .span_fatal(r.cur_span,
-                         format!("unknown macro variable `{}`",
-                                 token::get_ident(name)).as_slice());
+            None
+            // r.sp_diag
+            //  .span_fatal(r.cur_span,
+            //              format!("unknown macro variable `{}`",
+            //                      token::get_ident(name)).as_slice());
         }
     }
 }
@@ -249,9 +250,21 @@ pub fn tt_next_token(r: &mut TtReader) -> TokenAndSpan {
                 }
             }
             // FIXME #2887: think about span stuff here
-            TTNonterminal(sp, ident) => {
+            seq @ TTNonterminal(sp, ident) => {
                 r.stack.last_mut().unwrap().idx += 1;
-                match *lookup_cur_matched(r, ident) {
+                let cur_matched = match lookup_cur_matched(r, ident) {
+                    Some(cur_matched) => cur_matched,
+                    None => {
+                        r.stack.push(TtFrame {
+                            forest: tt_to_tts(seq),
+                            idx: 0,
+                            dotdotdoted: false,
+                            sep: None
+                        });
+                        continue
+                    }
+                };
+                match *cur_matched {
                     /* sidestep the interpolation tricks for ident because
                        (a) idents can be in lots of places, so it'd be a pain
                        (b) we actually can, since it's a token. */
@@ -273,6 +286,14 @@ pub fn tt_next_token(r: &mut TtReader) -> TokenAndSpan {
                                     token::get_ident(ident)).as_slice());
                     }
                 }
+            }
+            seq => {
+               r.stack.push(TtFrame {
+                   forest: tt_to_tts(seq),
+                   idx: 0,
+                   dotdotdoted: false,
+                   sep: None
+               });
             }
         }
     }

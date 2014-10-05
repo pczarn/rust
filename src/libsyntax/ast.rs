@@ -606,16 +606,42 @@ pub enum TokenTree {
     // FIXME(eddyb) #6308 Use Rc<[TokenTree]> after DST.
     TTDelim(Rc<Vec<TokenTree>>),
 
+    /// Comment as lexed
+    TTDocComment(Span, Name),
+
+    // For left-hand-sides of MBE macros:
+
+    /// match a seq
+    // TTMatchSeq(Rc<Vec<TokenTree>>, Option<::parse::token::Token>, bool, uint, uint),
+
+    /// match an nt
+    TTMatchNonterminal(Span, Ident, Ident, uint),
+
     // These only make sense for right-hand-sides of MBE macros:
 
     /// A kleene-style repetition sequence with a span, a TTForest,
     /// an optional separator, and a boolean where true indicates
     /// zero or more (..), and false indicates one or more (+).
     // FIXME(eddyb) #6308 Use Rc<[TokenTree]> after DST.
-    TTSeq(Span, Rc<Vec<TokenTree>>, Option<::parse::token::Token>, bool),
+    TTSeq(Span, Rc<Vec<TokenTree>>, Option<::parse::token::Token>, bool, uint),
 
     /// A syntactic variable that will be filled in by macro expansion.
-    TTNonterminal(Span, Ident)
+    TTNonterminal(Span, Ident, bool),
+}
+
+pub fn tt_to_tts(tt: TokenTree) -> Rc<Vec<TokenTree>> {
+    match tt {
+        TTDocComment(Span, Name) => {
+            vec![token::POUND, TTDelim(vec![token::LBRACKET,  token::RBRACKET])]
+        }
+        TTMatchNonterminal(..) => {
+            fail!()
+            // vec![TTNonterminal]
+        }
+        TTNonterminal(sp, name, followed) => {
+            Rc::new(vec![token::DOLLAR, ])
+        }
+    }
 }
 
 // Matchers are nodes defined-by and recognized-by the main rust parser and

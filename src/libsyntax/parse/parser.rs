@@ -2526,7 +2526,7 @@ impl<'a> Parser<'a> {
     }
 
     /// parse a single token tree from the input.
-    pub fn parse_token_tree(&mut self) -> TokenTree {
+    pub fn parse_token_tree(&mut self, name_idx: Option<&mut uint>) -> TokenTree {
         // FIXME #6994: currently, this is too eager. It
         // parses token trees but also identifies TTSeq's
         // and TTNonterminal's; it's too early to know yet
@@ -2539,7 +2539,7 @@ impl<'a> Parser<'a> {
         // not an EOF, and not the desired right-delimiter (if
         // it were, parse_seq_to_before_end would have prevented
         // reaching this point.
-        fn parse_non_delim_tt_tok(p: &mut Parser) -> TokenTree {
+        fn parse_non_delim_tt_tok(p: &mut Parser, name_idx: Option<&mut uint>) -> TokenTree {
             maybe_whole!(deref p, NtTT);
             match p.token {
               token::RPAREN | token::RBRACE | token::RBRACKET => {
@@ -2560,19 +2560,37 @@ impl<'a> Parser<'a> {
                 let sp = p.span;
 
                 if p.token == token::LPAREN {
+                    let name_idx_lo = name_idx.map(|idx| *idx);
                     let seq = p.parse_seq(
                         &token::LPAREN,
                         &token::RPAREN,
                         seq_sep_none(),
-                        |p| p.parse_token_tree()
+                        |p| p.parse_token_tree(name_idx)
                     );
                     let (s, z) = p.parse_sep_and_zerok();
                     let seq = match seq {
                         Spanned { node, .. } => node,
                     };
-                    TTSeq(mk_sp(sp.lo, p.span.hi), Rc::new(seq), s, z)
+                    match (name_idx_lo, name_idx) {
+                        (Some(lo), Some(&hi)) => {
+                            TTMatchSeq(Rc::new(seq), s, z, lo, hi)
+                        }
+                        _ => {
+                            TTSeq(mk_sp(sp.lo, p.span.hi), Rc::new(seq), s, z)
+                        }
+                    }
                 } else {
-                    TTNonterminal(sp, p.parse_ident())
+                    let name = p.parse_ident();
+                    match name_idx {
+                        Some(idx) if p.token == token::COLON && p.look_ahead(1, is_ident) => {
+                            p.bump();
+                            let nt_kind = p.parse_ident();
+                            let m = TTMatchNonterminal(sp, name, kind, *idx);
+                            *idx += 1;
+                            m
+                        }
+                        _ => TTNonterminal(sp, name)
+                    }
                 }
               }
               _ => {

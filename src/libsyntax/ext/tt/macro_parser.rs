@@ -104,32 +104,34 @@ pub struct MatcherPos {
     idx: uint,
     up: Option<Box<MatcherPos>>,
     matches: Vec<Vec<Rc<NamedMatch>>>,
-    match_lo: uint, match_hi: uint,
+    match_lo: uint,
+    match_cur: uint,
+    match_hi: uint,
     sp_lo: BytePos,
 }
 
-pub fn count_names(ms: &[Matcher]) -> uint {
+pub fn count_names(ms: &[TokenTree]) -> uint {
     ms.iter().fold(0, |ct, m| {
         ct + match m.node {
-            MatchTok(_) => 0u,
-            MatchSeq(ref more_ms, _, _, _, _) => {
+            TTSeq(_, ref more_ms, _, _, _) => {
                 count_names(more_ms.as_slice())
             }
-            MatchNonterminal(_, _, _) => 1u
+            TTMatchNonterminal(_, _, _) => 1u,
+            _ => 0u,
         }})
 }
 
-pub fn initial_matcher_pos(ms: Vec<Matcher> , sep: Option<Token>, lo: BytePos)
+pub fn initial_matcher_pos(ms: Vec<TokenTree> , sep: Option<Token>, lo: BytePos)
                            -> Box<MatcherPos> {
     let mut match_idx_hi = 0u;
     for elt in ms.iter() {
         match elt.node {
             MatchTok(_) => (),
-            MatchSeq(_,_,_,_,hi) => {
-                match_idx_hi = hi;       // it is monotonic...
+            MatchSeq(_,_,_,advance) => {
+                match_idx_hi += advance;       // it is monotonic...
             }
-            MatchNonterminal(_,_,pos) => {
-                match_idx_hi = pos+1u;  // ...so latest is highest
+            MatchNonterminal(_,_) => {
+                match_idx_hi += 1;  // ...so latest is highest
             }
         }
     }
@@ -141,6 +143,7 @@ pub fn initial_matcher_pos(ms: Vec<Matcher> , sep: Option<Token>, lo: BytePos)
         up: None,
         matches: matches,
         match_lo: 0u,
+        match_cur: 0u,
         match_hi: match_idx_hi,
         sp_lo: lo
     }
@@ -206,30 +209,31 @@ pub enum NamedMatch {
     MatchedNonterminal(Nonterminal)
 }
 
-pub fn nameize(p_s: &ParseSess, ms: &[Matcher], res: &[Rc<NamedMatch>])
+pub fn nameize(p_s: &ParseSess, ms: &[TokenTree], res: &[Rc<NamedMatch>])
             -> HashMap<Ident, Rc<NamedMatch>> {
-    fn n_rec(p_s: &ParseSess, m: &Matcher, res: &[Rc<NamedMatch>],
+    fn n_rec(p_s: &ParseSess, m: &TokenTree, res: &[Rc<NamedMatch>],
              ret_val: &mut HashMap<Ident, Rc<NamedMatch>>) {
         match *m {
-          codemap::Spanned {node: MatchTok(_), .. } => (),
-          codemap::Spanned {node: MatchSeq(ref more_ms, _, _, _, _), .. } => {
-            for next_m in more_ms.iter() {
-                n_rec(p_s, next_m, res, ret_val)
-            };
-          }
-          codemap::Spanned {
-                node: MatchNonterminal(bind_name, _, idx),
-                span
-          } => {
-            if ret_val.contains_key(&bind_name) {
-                let string = token::get_ident(bind_name);
-                p_s.span_diagnostic
-                   .span_fatal(span,
-                               format!("duplicated bind name: {}",
-                                       string.get()).as_slice())
+            TTTok(_) => (),
+            TTSeq(_, ref more_ms, _, _, _) => {
+                for next_m in more_ms.iter() {
+                    n_rec(p_s, next_m, res, ret_val)
+                }
             }
-            ret_val.insert(bind_name, res[idx].clone());
-          }
+            TTMatchNonterminal(sp, bind_name, _, idx) => {
+                match ret_val.entry(&bind_name) {
+                    Vacant(spot) => {
+                        spot.set(res[idx].clone());
+                    }
+                    Occupied(..) => {
+                        let string = token::get_ident(bind_name);
+                        p_s.span_diagnostic
+                           .span_fatal(span,
+                                       format!("duplicated bind name: {}",
+                                               string.get()).as_slice())
+                    }
+                }
+            }
         }
     }
     let mut ret_val = HashMap::new();
@@ -263,7 +267,7 @@ pub fn parse_or_else(sess: &ParseSess,
 pub fn parse(sess: &ParseSess,
              cfg: ast::CrateConfig,
              rdr: TtReader,
-             ms: &[Matcher])
+             ms: &[TokenTree])
              -> ParseResult {
     match parse_without_names(sess, cfg, rdr, ms) {
         Success(v) => Success(nameize(sess, ms, v.as_slice())),
@@ -286,7 +290,7 @@ pub fn token_name_eq(t1 : &Token, t2 : &Token) -> bool {
 pub fn parse_without_names(sess: &ParseSess,
              cfg: ast::CrateConfig,
              mut rdr: TtReader,
-             ms: &[Matcher])
+             ms: &[TokenTree])
              -> ParseResult<Vec<Rc<NamedMatch>>> {
     let mut cur_eis = Vec::new();
     cur_eis.push(initial_matcher_pos(ms.iter()
@@ -343,6 +347,7 @@ pub fn parse_without_names(sess: &ParseSess,
                                                                        sp.hi))));
                         }
 
+                        new_pos.match_cur = ei.match_hi;
                         new_pos.idx += 1;
                         cur_eis.push(new_pos);
                     }
@@ -374,12 +379,12 @@ pub fn parse_without_names(sess: &ParseSess,
                 match ei.elts.get(idx).node.clone() {
                   /* need to descend into sequence */
                   MatchSeq(ref matchers, ref sep, zero_ok,
-                           match_idx_lo, match_idx_hi) => {
+                           match_num) => {
                     if zero_ok {
                         let mut new_ei = ei.clone();
                         new_ei.idx += 1u;
                         //we specifically matched zero repeats.
-                        for idx in range(match_idx_lo, match_idx_hi) {
+                        for idx in range(ei.match_cur, ei.match_cur + match_num) {
                             new_ei.matches
                                   .get_mut(idx)
                                   .push(Rc::new(MatchedSeq(Vec::new(), sp)));
@@ -396,11 +401,15 @@ pub fn parse_without_names(sess: &ParseSess,
                         idx: 0u,
                         up: Some(ei_t),
                         matches: matches,
-                        match_lo: match_idx_lo, match_hi: match_idx_hi,
+                        match_lo: ei_t.match_cur,
+                        match_cur: ei_t.match_cur,
+                        match_hi: ei_t.match_cur + match_num,
                         sp_lo: sp.lo
                     });
                   }
-                  MatchNonterminal(_,_,_) => { bb_eis.push(ei) }
+                  MatchNonterminal(_,_,_) => {
+                      bb_eis.push(ei)
+                  }
                   MatchTok(ref t) => {
                     let mut ei_t = ei.clone();
                     if token_name_eq(t,&tok) {
@@ -455,11 +464,12 @@ pub fn parse_without_names(sess: &ParseSess,
 
                 let mut ei = bb_eis.pop().unwrap();
                 match ei.elts.get(ei.idx).node {
-                  MatchNonterminal(_, name, idx) => {
+                  MatchNonterminal(_, _, name) => {
                     let name_string = token::get_ident(name);
-                    ei.matches.get_mut(idx).push(Rc::new(MatchedNonterminal(
+                    ei.matches.get_mut(ei.match_cur).push(Rc::new(MatchedNonterminal(
                         parse_nt(&mut rust_parser, name_string.get()))));
                     ei.idx += 1u;
+                    ei.match_cur += 1;
                   }
                   _ => fail!()
                 }
