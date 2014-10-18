@@ -719,34 +719,38 @@ pub enum Entry<'a, K:'a, V:'a> { // ? bounds
     Vacant(VacantEntry<'a, K, V>),
 }
 
-struct OccupiedEntry<'a> {
-
-    path: u64
+struct OccupiedEntry<'a, K, V> {
+    path_ptrs: [*mut Box<TreeNode<K, V>>, ..8],
+    path: u64,
+    depth: uint,
+    node: &'a mut Box<TreeNode<K, V>>,
 }
 
 struct VacantEntry<'a> {
-    
-    path: u64
+    path_ptrs: [*mut Box<TreeNode<K, V>>, ..8],
+    path: u64,
+    depth: uint,
+    node: &'a mut Option<Box<TreeNode<K, V>>>,
+    key: K,
 }
 
 impl<'a, K, V> OccupiedEntry<'a, K, V> {
     /// Gets a reference to the value in the entry
     pub fn get(&self) -> &V {
-        let (_, v) = self.elem.read();
-        v
+        unsafe {
+            &(*self.node).value
+        }
     }
 
     /// Gets a mutable reference to the value in the entry
     pub fn get_mut(&mut self) -> &mut V {
-        let (_, v) = self.elem.read_mut();
-        v
+        &mut self.node.value
     }
 
     /// Converts the OccupiedEntry into a mutable reference to the value in the entry
     /// with a lifetime bound to the map itself
     pub fn into_mut(self) -> &'a mut V {
-        let (_, v) = self.elem.into_mut_refs();
-        v
+        &mut self.node.value
     }
 
     /// Sets the value of the entry, and returns the entry's old value
@@ -758,23 +762,25 @@ impl<'a, K, V> OccupiedEntry<'a, K, V> {
 
     /// Takes the value out of the entry, and returns it
     pub fn take(self) -> V {
-        let (_, _, v) = self.elem.take();
-        v
+        // BALANCE remove
     }
 }
 
 impl<'a, K, V> VacantEntry<'a, K, V> {
     /// Sets the value of the entry with the VacantEntry's key,
     /// and returns a mutable reference to it
-    pub fn set(self, value: V) -> &'a mut V {
-        match self.elem {
-            NeqElem(bucket, ib) => {
-                robin_hood(bucket, ib, self.hash, self.key, value)
-            }
-            NoElem(bucket) => {
-                let full = bucket.put(self.hash, self.key, value);
-                let (_, v) = full.into_mut_refs();
-                v
+    pub fn set(mut self, value: V) -> &'a mut V {
+        *self.node = Some(box TreeNode::new(self.key, value));
+
+        for _ in range(0u, self.depth & 7)
+
+        unsafe {
+            for i in range(0u, self.depth >> 3).rev() {
+                let ptr0 = self.path_ptrs[i & 7];
+                let ptr1 = if (self.path >> 7) & 1 == 1 { &mut ptr0.right } else { &mut ptr0.left };
+                let ptr2 = if (self.path >> 7) & 1 == 1 { &mut ptr1.unwrap().right } else { &mut ptr1.unwrap().left };
+                // hmm
+                self.path >>= 8;
             }
         }
     }
@@ -1627,9 +1633,11 @@ fn tree_find_entry_with<'r, K, V>(node: &'r mut Option<Box<TreeNode<K, V>>>,
 
     let root = node;
     let mut current: *mut _ = node;
-    let mut path = 1u64;
+    let mut depth = 0;
+    let mut path_ptrs = [zeroed(), ..8];
+    // let mut path = 1u64;
+    let mut path = 0u64;
     loop {
-        path <<= 1;
         let temp = current; // hack to appease borrowck
         unsafe {
             match *temp {
@@ -1643,28 +1651,36 @@ fn tree_find_entry_with<'r, K, V>(node: &'r mut Option<Box<TreeNode<K, V>>>,
                             current = &mut r.right;
                         }
                         Equal => {
-                            let leading_zeros = path.leading_zeros();
-                            path <<= leading_zeros + 1;
-                            return (Some(r), path)
+                            // let leading_zeros = path.leading_zeros();
+                            // path <<= 8 - (depth & 7);
+                            // return (Some(r), path)
                             return Occupied(OccupiedEntry {
-                                node: temp,
-                                root: node,
+                                node: r,
                                 path: path,
-                                depth: u64::BITS - leading_zeros - 2;
+                                depth: depth,
+                                path_ptrs: path_ptrs,
+                                // depth: u64::BITS - leading_zeros - 2,
                             });
                         }
                     }
+                    if depth & 7 == 0 {
+                        path_ptrs[(depth >> 3) & 7] = r;
+                    }
                 }
                 None => {
-                    path <<= path.leading_zeros() + 1;
+                    // path <<= path.leading_zeros() + 1;
+                    // path <<= 8 - (depth & 7);
                     return Vacant(VacantEntry {
                         node: temp,
                         root: node,
                         path: path,
+                        path_ptrs: path_ptrs,
                     });
                 }
             }
         }
+        depth += 1;
+        path <<= 1;
     }
 }
 
