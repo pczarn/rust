@@ -465,6 +465,23 @@ pub fn expand_quote_stmt(cx: &mut ExtCtxt,
     base::MacExpr::new(expanded)
 }
 
+pub fn expand_quote_matcher(cx: &mut ExtCtxt,
+                            sp: Span,
+                            tts: &[ast::TokenTree])
+                            -> Box<base::MacResult+'static> {
+    let (cx_expr, tts) = parse_arguments_to_quote(cx, tts);
+    let mut vector = mk_stmts_let(cx, sp);
+    vector.extend(mk_tts(cx, &tts[], true).into_iter());
+    let block = cx.expr_block(
+        cx.block_all(sp,
+                     Vec::new(),
+                     vector,
+                     Some(cx.expr_ident(sp, id_ext("tt")))));
+
+    let expanded = expand_wrapper(cx, sp, cx_expr, block);
+    base::MacExpr::new(expanded)
+}
+
 fn ids_ext(strs: Vec<String> ) -> Vec<ast::Ident> {
     strs.iter().map(|str| str_to_ident(&(*str)[])).collect()
 }
@@ -642,7 +659,7 @@ fn mk_token(cx: &ExtCtxt, sp: Span, tok: &token::Token) -> P<ast::Expr> {
     mk_token_path(cx, sp, name)
 }
 
-fn mk_tt(cx: &ExtCtxt, tt: &ast::TokenTree) -> Vec<P<ast::Stmt>> {
+fn mk_tt(cx: &ExtCtxt, tt: &ast::TokenTree, matcher: bool) -> Vec<P<ast::Stmt>> {
     match *tt {
         ast::TtToken(sp, SubstNt(ident, _)) => {
             // tt.extend($ident.to_tokens(ext_cx).into_iter())
@@ -663,12 +680,12 @@ fn mk_tt(cx: &ExtCtxt, tt: &ast::TokenTree) -> Vec<P<ast::Stmt>> {
 
             vec!(cx.stmt_expr(e_push))
         }
-        ref tt @ ast::TtToken(_, MatchNt(..)) => {
+        ref tt @ ast::TtToken(_, MatchNt(..)) if !matcher => {
             let mut seq = vec![];
             for i in range(0, tt.len()) {
                 seq.push(tt.get_tt(i));
             }
-            mk_tts(cx, &seq[])
+            mk_tts(cx, &seq[], matcher)
         }
         ast::TtToken(sp, ref tok) => {
             let e_sp = cx.expr_ident(sp, id_ext("_sp"));
@@ -683,27 +700,39 @@ fn mk_tt(cx: &ExtCtxt, tt: &ast::TokenTree) -> Vec<P<ast::Stmt>> {
             vec!(cx.stmt_expr(e_push))
         },
         ast::TtDelimited(_, ref delimed) => {
-            mk_tt(cx, &delimed.open_tt()).into_iter()
-                .chain(delimed.tts.iter().flat_map(|tt| mk_tt(cx, tt).into_iter()))
-                .chain(mk_tt(cx, &delimed.close_tt()).into_iter())
+            mk_tt(cx, &delimed.open_tt(), matcher).into_iter()
+                .chain(delimed.tts.iter().flat_map(|tt| mk_tt(cx, tt, matcher).into_iter()))
+                .chain(mk_tt(cx, &delimed.close_tt(), matcher).into_iter())
                 .collect()
         },
-        ast::TtSequence(..) => panic!("TtSequence in quote!"),
+        ast::TtSequence(_, /*ref seq*/_) => {
+            // if seq.num_captures == 0 {
+            //     cx.span_fatal(sp,
+            //                   "attempted to repeat an expression \
+            //                    containing no syntax \
+            //                    variables matched as repeating at this depth");
+            // }
+
+            // let (stmts, repeating) = mk_tts_lockstep(cx, &seq);
+            // cx.pat_tuple(sp, repeating.iter().map(|pat| cx.expr_ident(sp, id_ext(*pat))).collect());
+            panic!()
+
+        }
     }
 }
 
-fn mk_tts(cx: &ExtCtxt, tts: &[ast::TokenTree]) -> Vec<P<ast::Stmt>> {
-    let mut ss = Vec::new();
-    for tt in tts.iter() {
-        ss.extend(mk_tt(cx, tt).into_iter());
-    }
-    ss
-}
+// fn mk_tts_lockstep(arg: typ) -> ret {
+//     // add code here
+// }
 
-fn expand_tts(cx: &ExtCtxt, sp: Span, tts: &[ast::TokenTree])
-              -> (P<ast::Expr>, P<ast::Expr>) {
+// attempted to repeat an expression \
+// containing no syntax \
+// variables matched as repeating at this depth
+
+fn parse_arguments_to_quote(cx: &ExtCtxt, tts: &[ast::TokenTree])
+                            -> (P<ast::Expr>, Vec<ast::TokenTree>) {
     // NB: It appears that the main parser loses its mind if we consider
-    // $foo as a TtNonterminal during the main parse, so we have to re-parse
+    // $foo as a SubstNt during the main parse, so we have to re-parse
     // under quote_depth > 0. This is silly and should go away; the _guess_ is
     // it has to do with transition away from supporting old-style macros, so
     // try removing it when enough of them are gone.
@@ -719,6 +748,10 @@ fn expand_tts(cx: &ExtCtxt, sp: Span, tts: &[ast::TokenTree])
     let tts = p.parse_all_token_trees();
     p.abort_if_errors();
 
+    (cx_expr, tts)
+}
+
+fn mk_stmts_let(cx: &ExtCtxt, sp: Span) -> Vec<P<ast::Stmt>> {
     // We also bind a single value, sp, to ext_cx.call_site()
     //
     // This causes every span in a token-tree quote to be attributed to the
@@ -747,7 +780,7 @@ fn expand_tts(cx: &ExtCtxt, sp: Span, tts: &[ast::TokenTree])
 
     let e_sp = cx.expr_method_call(sp,
                                    cx.expr_ident(sp, id_ext("ext_cx")),
-                                   id_ext("call_site"),
+                                   id_ext("call_site"), 
                                    Vec::new());
 
     let stmt_let_sp = cx.stmt_let(sp, false,
@@ -756,8 +789,23 @@ fn expand_tts(cx: &ExtCtxt, sp: Span, tts: &[ast::TokenTree])
 
     let stmt_let_tt = cx.stmt_let(sp, true, id_ext("tt"), cx.expr_vec_ng(sp));
 
-    let mut vector = vec!(stmt_let_sp, stmt_let_tt);
-    vector.extend(mk_tts(cx, &tts[]).into_iter());
+    vec!(stmt_let_sp, stmt_let_tt)
+}
+
+fn mk_tts(cx: &ExtCtxt, tts: &[ast::TokenTree], matcher: bool) -> Vec<P<ast::Stmt>> {
+    let mut ss = Vec::new();
+    for tt in tts.iter() {
+        ss.extend(mk_tt(cx, tt, matcher).into_iter());
+    }
+    ss
+}
+
+fn expand_tts(cx: &ExtCtxt, sp: Span, tts: &[ast::TokenTree])
+              -> (P<ast::Expr>, P<ast::Expr>) {
+    let (cx_expr, tts) = parse_arguments_to_quote(cx, tts);
+
+    let mut vector = mk_stmts_let(cx, sp);
+    vector.extend(mk_tts(cx, &tts[], false).into_iter());
     let block = cx.expr_block(
         cx.block_all(sp,
                      vector,

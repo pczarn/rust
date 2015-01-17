@@ -494,6 +494,9 @@ fn initial_syntax_expander_table(ecfg: &expand::ExpansionConfig) -> SyntaxEnv {
         syntax_expanders.insert(intern("quote_stmt"),
                            builtin_normal_expander(
                                 ext::quote::expand_quote_stmt));
+        syntax_expanders.insert(intern("quote_matcher"),
+                           builtin_normal_expander(
+                                ext::quote::expand_quote_matcher));
     }
 
     syntax_expanders.insert(intern("line"),

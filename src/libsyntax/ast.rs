@@ -60,9 +60,12 @@ pub use self::PathParameters::*;
 use codemap::{Span, Spanned, DUMMY_SP, ExpnId};
 use abi::Abi;
 use ast_util;
+use ext::base;
+use ext::tt::macro_parser;
 use owned_slice::OwnedSlice;
 use parse::token::{InternedString, str_to_ident};
 use parse::token;
+use parse::lexer;
 use ptr::P;
 
 use std::fmt;
@@ -945,6 +948,24 @@ impl TokenTree {
             TtSequence(span, _)  => span,
         }
     }
+
+    /// Use this token tree as a matcher to parse given tts.
+    pub fn parse(mtch: &[TokenTree], cx: &base::ExtCtxt, tts: &[TokenTree])
+                 -> macro_parser::NamedParseResult {
+        // `None` is because we're not interpolating
+        let arg_rdr = lexer::new_tt_reader_with_doc_flag(&cx.parse_sess().span_diagnostic,
+                                                         None,
+                                                         None,
+                                                         tts.iter()
+                                                            .map(|x| x.clone())
+                                                            .collect(),
+                                                         true);
+        macro_parser::parse(cx.parse_sess(), cx.cfg(), arg_rdr, mtch)
+    }
+
+    // pub fn parse(&self, cx: &base::ExtCtxt, tts: &[TokenTree]) -> macro_parser::NamedParseResult {
+    //     TokenTree::parse(ref_slice(self), cx, tts)
+    // }
 }
 
 pub type Mac = Spanned<Mac_>;
