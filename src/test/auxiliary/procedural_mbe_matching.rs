@@ -11,7 +11,7 @@
 // force-host
 
 #![crate_type="dylib"]
-#![feature(plugin_registrar)]
+#![feature(plugin_registrar, quote)]
 
 extern crate syntax;
 extern crate rustc;
@@ -34,7 +34,7 @@ fn expand_mbe_matching(cx: &mut ExtCtxt, sp: Span, args: &[TokenTree])
         a $doc_text b
     );
 
-    match TokenTree::parse(&matcher[], cx, &tt[]) {
+    match TokenTree::parse(cx, &matcher[], &tt[]) {
         Success(map) => {
             assert_eq!(1, map.len());
             match map.get(&token::str_to_ident("doc1")) {
@@ -52,7 +52,7 @@ fn expand_mbe_matching(cx: &mut ExtCtxt, sp: Span, args: &[TokenTree])
                                                 $val:expr, $pat:pat, $res:path);
     let tt = quote_tokens!(cx, abc, d, Fn(T)->U, { block }, 2 + 3, Some(xyz), ::path::somewhere);
 
-    match TokenTree::parse(&overly_complicated[], cx, &tt[]) {
+    match TokenTree::parse(cx, &overly_complicated[], &tt[]) {
         Success(map) => {
             assert_eq!(7, map.len());
             match map.get(&token::str_to_ident("ty")) {
@@ -67,7 +67,7 @@ fn expand_mbe_matching(cx: &mut ExtCtxt, sp: Span, args: &[TokenTree])
 
     let matcher = quote_matcher!(cx, $($e:expr);*);
 
-    let mac_expr = match TokenTree::parse(&matcher[], cx, args) {
+    let mac_expr = match TokenTree::parse(cx, &matcher[], args) {
         Success(map) => {
             match map.get(&token::str_to_ident("e")) {
                 Some(&MatchedSeq(exprs)) => {

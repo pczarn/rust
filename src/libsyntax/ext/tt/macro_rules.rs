@@ -156,7 +156,7 @@ fn generic_extension<'cx>(cx: &'cx ExtCtxt,
                 _ => cx.span_fatal(sp, "malformed macro lhs")
             };
 
-            match TokenTree::parse(lhs_tt, cx, arg) {
+            match TokenTree::parse(cx, lhs_tt, arg) {
               Success(named_matches) => {
                 let rhs = match *rhses[i] {
                     // okay, what's your transcriber?
@@ -245,8 +245,6 @@ pub fn compile<'cx>(cx: &'cx mut ExtCtxt,
                                      cx.cfg(),
                                      arg_reader,
                                      argument_gram);
-
-    // quote_matcher!($( $lhs:tt => $rhs:tt );+ $(;)*).parse(cx, def.body);
 
     // Extract the arguments:
     let lhses = match *argument_map[lhs_nm] {
