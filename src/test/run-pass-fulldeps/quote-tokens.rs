@@ -40,6 +40,9 @@ fn syntax_extension(cx: &ExtCtxt) {
     let _k: P<syntax::ast::Method> = quote_method!(cx, #[doc = "hello"] fn foo(&self) {});
 
     let _l: P<syntax::ast::Ty> = quote_ty!(cx, &int);
+
+    let _m: P<syntax::ast::TokenTree> = quote_matcher!(cx, $($foo:tt,)* bar);
+    let _n: P<syntax::ast::Attribute> = quote_attr!(cx, #![cfg(foo, bar = "baz")]);
 }
 
 fn main() {
