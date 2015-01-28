@@ -474,7 +474,6 @@ pub fn expand_quote_matcher(cx: &mut ExtCtxt,
     vector.extend(mk_tts(cx, &tts[], true).into_iter());
     let block = cx.expr_block(
         cx.block_all(sp,
-                     Vec::new(),
                      vector,
                      Some(cx.expr_ident(sp, id_ext("tt")))));
 
@@ -621,6 +620,21 @@ fn mk_token(cx: &ExtCtxt, sp: Span, tok: &token::Token) -> P<ast::Expr> {
             return cx.expr_call(sp,
                                 mk_token_path(cx, sp, "DocComment"),
                                 vec!(mk_name(cx, sp, ident.ident())));
+        }
+
+        token::MatchNt(name, kind, namep, kindp) => {
+            return cx.expr_call(sp,
+                                mk_token_path(cx, sp, "MatchNt"),
+                                vec!(mk_ident(cx, sp, name),
+                                     mk_ident(cx, sp, kind),
+                                     match namep {
+                                        ModName => mk_token_path(cx, sp, "ModName"),
+                                        Plain   => mk_token_path(cx, sp, "Plain"),
+                                     },
+                                     match kindp {
+                                        ModName => mk_token_path(cx, sp, "ModName"),
+                                        Plain   => mk_token_path(cx, sp, "Plain"),
+                                     }));
         }
 
         token::Interpolated(_) => panic!("quote! with interpolated token"),
