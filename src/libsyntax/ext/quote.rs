@@ -465,6 +465,15 @@ pub fn expand_quote_stmt(cx: &mut ExtCtxt,
     base::MacExpr::new(expanded)
 }
 
+pub fn expand_quote_attr(cx: &mut ExtCtxt,
+                         sp: Span,
+                         tts: &[ast::TokenTree])
+                         -> Box<base::MacResult+'static> {
+    let expanded = expand_parse_call(cx, sp, "parse_attribute",
+                                    vec!(cx.expr_bool(sp, true)), tts);
+    base::MacExpr::new(expanded)
+}
+
 pub fn expand_quote_matcher(cx: &mut ExtCtxt,
                             sp: Span,
                             tts: &[ast::TokenTree])
