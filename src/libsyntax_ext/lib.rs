@@ -50,7 +50,8 @@ pub mod proc_macro_impl;
 
 use std::rc::Rc;
 use syntax::ast;
-use syntax::ext::base::{MacroExpanderFn, NormalTT, NamedSyntaxExtension};
+use syntax::ext::base::{MacroExpanderFn, NormalTT, TTMacroExpander, NamedSyntaxExtension};
+use syntax::ext::quote::QuoteMacroExpander;
 use syntax::symbol::Symbol;
 
 pub fn register_builtins(resolver: &mut syntax::ext::base::Resolver,
@@ -65,25 +66,25 @@ pub fn register_builtins(resolver: &mut syntax::ext::base::Resolver,
     macro_rules! register {
         ($( $name:ident: $f:expr, )*) => { $(
             register(Symbol::intern(stringify!($name)),
-                     NormalTT(Box::new($f as MacroExpanderFn), None, false));
+                     NormalTT(Box::new($f) as Box<TTMacroExpander>, None, false));
         )* }
     }
 
     if enable_quotes {
-        use syntax::ext::quote::*;
         register! {
-            quote_tokens: expand_quote_tokens,
-            quote_expr: expand_quote_expr,
-            quote_ty: expand_quote_ty,
-            quote_item: expand_quote_item,
-            quote_pat: expand_quote_pat,
-            quote_arm: expand_quote_arm,
-            quote_stmt: expand_quote_stmt,
-            quote_attr: expand_quote_attr,
-            quote_arg: expand_quote_arg,
-            quote_block: expand_quote_block,
-            quote_meta_item: expand_quote_meta_item,
-            quote_path: expand_quote_path,
+            // quote_matcher: QuoteMacroExpander::Matcher,
+            quote_tokens: QuoteMacroExpander::Tokens,
+            quote_expr: QuoteMacroExpander::Expr,
+            quote_ty: QuoteMacroExpander::Item,
+            quote_item: QuoteMacroExpander::Pat,
+            quote_pat: QuoteMacroExpander::Arm,
+            quote_arm: QuoteMacroExpander::Ty,
+            quote_stmt: QuoteMacroExpander::Stmt,
+            quote_attr: QuoteMacroExpander::Attr,
+            quote_arg: QuoteMacroExpander::Arg,
+            quote_block: QuoteMacroExpander::Block,
+            quote_meta_item: QuoteMacroExpander::MetaItem,
+            quote_path: QuoteMacroExpander::Path,
         }
     }
 
