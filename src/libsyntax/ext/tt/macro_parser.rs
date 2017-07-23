@@ -1,4 +1,4 @@
-// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2012-2016 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -8,18 +8,19 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-//! This is an Earley-like parser, without support for in-grammar nonterminals,
-//! only by calling out to the main rust parser for named nonterminals (which it
-//! commits to fully when it hits one in a grammar). This means that there are no
-//! completer or predictor rules, and therefore no need to store one column per
-//! token: instead, there's a set of current Earley items and a set of next
-//! ones. Instead of NTs, we have a special case for Kleene star. The big-O, in
-//! pathological cases, is worse than traditional Earley parsing, but it's an
-//! easier fit for Macro-by-Example-style rules, and I think the overhead is
-//! lower. (In order to prevent the pathological case, we'd need to lazily
-//! construct the resulting `NamedMatch`es at the very end. It'd be a pain,
-//! and require more memory to keep around old items, but it would also save
-//! overhead)
+//! This is an NFA-based parser, which calls out to the main rust parser for named nonterminals
+//! (which it commits to fully when it hits one in a grammar). There's a set of current NFA threads
+//! and a set of next ones. Instead of NTs, we have a special case for Kleene star. The big-O, in
+//! pathological cases, is worse than traditional use of NFA or Earley parsing, but it's an easier
+//! fit for Macro-by-Example-style rules.
+//!
+//! (In order to prevent the pathological case, we'd need to lazily construct the resulting
+//! `NamedMatch`es at the very end. It'd be a pain, and require more memory to keep around old
+//! items, but it would also save overhead)
+//!
+//! We don't say this parser uses the Earley algorithm, because it's an overly broad description.
+//! NFAs are similar to Earley parsers without completion rules, prediction rules, and
+//! nonterminals.
 //!
 //! Quick intro to how the parser works:
 //!
@@ -27,19 +28,20 @@
 //! dot. For example `· a $( a )* a b` is a position, as is `a $( · a )* a b`.
 //!
 //! The parser walks through the input a character at a time, maintaining a list
-//! of items consistent with the current position in the input string: `cur_eis`.
+//! of threads consistent with the current position in the input string: `cur_eis`.
 //!
-//! As it processes them, it fills up `eof_eis` with items that would be valid if
-//! the macro invocation is now over, `bb_eis` with items that are waiting on
-//! a Rust nonterminal like `$e:expr`, and `next_eis` with items that are waiting
+//! As it processes them, it fills up `eof_items` with threads that would be valid if
+//! the macro invocation is now over, `bb_items` with threads that are waiting on
+//! a Rust nonterminal like `$e:expr`, and `next_items` with threads that are waiting
 //! on a particular token. Most of the logic concerns moving the · through the
-//! repetitions indicated by Kleene stars. It only advances or calls out to the
-//! real Rust parser when no `cur_eis` items remain
+//! repetitions indicated by Kleene stars. The rules for moving the · without
+//! consuming any input are called epsilon transitions. It only advances or calls
+//! out to the real Rust parser when no `cur_eis` threads remain.
 //!
 //! Example: Start parsing `a a a a b` against [· a $( a )* a b].
 //!
 //! Remaining input: `a a a a b`
-//! next_eis: [· a $( a )* a b]
+//! next_items: [· a $( a )* a b]
 //!
 //! - - - Advance over an `a`. - - -
 //!
@@ -51,22 +53,22 @@
 //! - - - Advance over an `a`. - - -
 //!
 //! Remaining input: `a a b`
-//! cur: [a $( a · )* a b]  next: [a $( a )* a · b]
-//! Finish/Repeat (first item)
+//! cur: [a $( a · )* a b]  [a $( a )* a · b]
+//! Follow epsilon transition: Finish/Repeat (first item)
 //! next: [a $( a )* · a b]  [a $( · a )* a b]  [a $( a )* a · b]
 //!
 //! - - - Advance over an `a`. - - - (this looks exactly like the last step)
 //!
 //! Remaining input: `a b`
-//! cur: [a $( a · )* a b]  next: [a $( a )* a · b]
-//! Finish/Repeat (first item)
+//! cur: [a $( a · )* a b]  [a $( a )* a · b]
+//! Follow epsilon transition: Finish/Repeat (first item)
 //! next: [a $( a )* · a b]  [a $( · a )* a b]  [a $( a )* a · b]
 //!
 //! - - - Advance over an `a`. - - - (this looks exactly like the last step)
 //!
 //! Remaining input: `b`
-//! cur: [a $( a · )* a b]  next: [a $( a )* a · b]
-//! Finish/Repeat (first item)
+//! cur: [a $( a · )* a b]  [a $( a )* a · b]
+//! Follow epsilon transition: Finish/Repeat (first item)
 //! next: [a $( a )* · a b]  [a $( · a )* a b]
 //!
 //! - - - Advance over a `b`. - - -
@@ -292,16 +294,16 @@ pub fn parse(sess: &ParseSess,
                                      rdr.peek().sp.lo));
 
     loop {
-        let mut bb_eis = Vec::new(); // black-box parsed by parser.rs
-        let mut next_eis = Vec::new(); // or proceed normally
-        let mut eof_eis = Vec::new();
+        let mut bb_items = Vec::new(); // black-box parsed by parser.rs
+        let mut next_items = Vec::new(); // or proceed normally
+        let mut eof_items = Vec::new();
 
         let TokenAndSpan { tok, sp } = rdr.peek();
 
         /* we append new items to this while we go */
         loop {
             let mut ei = match cur_eis.pop() {
-                None => break, /* for each Earley Item */
+                None => break, /* for each NFA thread */
                 Some(ei) => ei,
             };
 
@@ -366,7 +368,7 @@ pub fn parse(sess: &ParseSess,
                                 let mut ei_t = ei.clone();
                                 // ei_t.match_cur = ei_t.match_lo;
                                 ei_t.idx += 1;
-                                next_eis.push(ei_t);
+                                next_items.push(ei_t);
                             }
                         }
                         _ => { // we don't need a separator
@@ -377,7 +379,7 @@ pub fn parse(sess: &ParseSess,
                         }
                     }
                 } else {
-                    eof_eis.push(ei);
+                    eof_items.push(ei);
                 }
             } else {
                 match ei.top_elts.get_tt(idx) {
@@ -416,7 +418,7 @@ pub fn parse(sess: &ParseSess,
                         // so we can eliminate them from consideration.
                         match tok {
                             token::CloseDelim(_) => {},
-                            _ => bb_eis.push(ei),
+                            _ => bb_items.push(ei),
                         }
                     }
                     TokenTree::Token(sp, SubstNt(..)) => {
@@ -436,7 +438,7 @@ pub fn parse(sess: &ParseSess,
                         if token_name_eq(t,&tok) {
                             let mut ei_t = ei.clone();
                             ei_t.idx += 1;
-                            next_eis.push(ei_t);
+                            next_items.push(ei_t);
                         }
                     }
                 }
@@ -445,21 +447,21 @@ pub fn parse(sess: &ParseSess,
 
         /* error messages here could be improved with links to orig. rules */
         if token_name_eq(&tok, &token::Eof) {
-            if eof_eis.len() == 1 {
+            if eof_items.len() == 1 {
                 let mut v = Vec::new();
-                for dv in &mut (&mut eof_eis[0]).matches {
+                for dv in &mut (&mut eof_items[0]).matches {
                     v.push(dv.pop().unwrap());
                 }
                 return nameize(sess, ms, &v[..]);
-            } else if eof_eis.len() > 1 {
+            } else if eof_items.len() > 1 {
                 return Error(sp, "ambiguity: multiple successful parses".to_string());
             } else {
                 return Failure(sp, token::Eof);
             }
         } else {
-            if (!bb_eis.is_empty() && !next_eis.is_empty())
-                || bb_eis.len() > 1 {
-                let nts = bb_eis.iter().map(|ei| match ei.top_elts.get_tt(ei.idx) {
+            if (!bb_items.is_empty() && !next_items.is_empty())
+                || bb_items.len() > 1 {
+                let nts = bb_items.iter().map(|ei| match ei.top_elts.get_tt(ei.idx) {
                     TokenTree::Token(_, MatchNt(bind, name)) => {
                         format!("{} ('{}')", name, bind)
                     }
@@ -468,24 +470,24 @@ pub fn parse(sess: &ParseSess,
 
                 return Error(sp, format!(
                     "local ambiguity: multiple parsing options: {}",
-                    match next_eis.len() {
+                    match next_items.len() {
                         0 => format!("built-in NTs {}.", nts),
                         1 => format!("built-in NTs {} or 1 other option.", nts),
                         n => format!("built-in NTs {} or {} other options.", nts, n),
                     }
                 ))
-            } else if bb_eis.is_empty() && next_eis.is_empty() {
+            } else if bb_items.is_empty() && next_items.is_empty() {
                 return Failure(sp, tok);
-            } else if !next_eis.is_empty() {
+            } else if !next_items.is_empty() {
                 /* Now process the next token */
-                while !next_eis.is_empty() {
-                    cur_eis.push(next_eis.pop().unwrap());
+                while !next_items.is_empty() {
+                    cur_eis.push(next_items.pop().unwrap());
                 }
                 rdr.next_token();
-            } else /* bb_eis.len() == 1 */ {
+            } else /* bb_items.len() == 1 */ {
                 rdr.next_tok = {
                     let mut rust_parser = Parser::new(sess, cfg.clone(), Box::new(&mut rdr));
-                    let mut ei = bb_eis.pop().unwrap();
+                    let mut ei = bb_items.pop().unwrap();
                     if let TokenTree::Token(span, MatchNt(_, ident)) = ei.top_elts.get_tt(ei.idx) {
                         let match_cur = ei.match_cur;
                         (&mut ei.matches[match_cur]).push(Rc::new(MatchedNonterminal(
